@@ -46,6 +46,7 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		Password:      cfg.Management.Password,
 		ProxyUsername: proxyUsername,
 		ProxyPassword: proxyPassword,
+		ExternalIP:    cfg.ExternalIP,
 	}
 	monitorMgr, err := monitor.NewManager(monitorCfg)
 	if err != nil {

@@ -6,13 +6,14 @@
 
 - **多协议支持**: VMess、VLESS、Hysteria2、Shadowsocks、Trojan
 - **多种传输层**: TCP、WebSocket、HTTP/2、gRPC、HTTPUpgrade
+- **订阅链接支持**: 自动从订阅链接获取节点，支持 Base64、Clash YAML 等格式
 - **节点池模式**: 自动故障转移、负载均衡
 - **多端口模式**: 每个节点独立监听端口
 - **Web 监控面板**: 实时查看节点状态、延迟探测、一键导出节点
 - **密码保护**: WebUI 支持密码认证，保护节点信息安全
 - **自动健康检查**: 启动时自动检测所有节点可用性，定期（5分钟）检查节点状态
-- **智能节点过滤**: 自动过滤不可用节点，WebUI 和导出仅显示健康节点
-- **灵活配置**: 支持配置文件和节点文件分离
+- **智能节点过滤**: 自动过滤不可用节点，WebUI 和导出按延迟排序
+- **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
 
 ## 快速开始
 
@@ -55,6 +56,11 @@ go build -tags "with_utls with_quic with_grpc" -o easy-proxies ./cmd/easy_proxie
 ```yaml
 mode: pool                    # 运行模式: pool (节点池) 或 multi-port (多端口)
 log_level: info               # 日志级别: debug, info, warn, error
+external_ip: ""               # 外部 IP 地址，用于导出时替换 0.0.0.0（Docker 部署时建议配置）
+
+# 订阅链接（可选，支持多个）
+subscriptions:
+  - "https://example.com/subscribe"
 
 # 管理接口
 management:
@@ -158,7 +164,22 @@ nodes_file: nodes.txt
 
 ### 节点配置
 
-**方式 1: 使用节点文件（推荐）**
+**方式 1: 使用订阅链接（推荐）**
+
+支持从订阅链接自动获取节点，支持多种格式：
+
+```yaml
+subscriptions:
+  - "https://example.com/subscribe/v2ray"
+  - "https://example.com/subscribe/clash"
+```
+
+支持的订阅格式：
+- **Base64 编码**: V2Ray 标准订阅格式
+- **Clash YAML**: Clash 配置文件格式
+- **纯文本**: 每行一个节点 URI
+
+**方式 2: 使用节点文件**
 
 在 `config.yaml` 中指定：
 
@@ -173,9 +194,10 @@ vless://uuid@server:443?security=reality&sni=example.com#节点名称
 hysteria2://password@server:443?sni=example.com#HY2节点
 ss://base64@server:8388#SS节点
 trojan://password@server:443?sni=example.com#Trojan节点
+vmess://base64...#VMess节点
 ```
 
-**方式 2: 直接在配置文件中**
+**方式 3: 直接在配置文件中**
 
 ```yaml
 nodes:
@@ -184,6 +206,8 @@ nodes:
     uri: "ss://base64@server:8388"
     port: 24001  # 可选，手动指定端口
 ```
+
+> **提示**: 可以同时使用多种方式，节点会自动合并。
 
 ## 支持的协议
 

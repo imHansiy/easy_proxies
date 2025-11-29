@@ -242,13 +242,19 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	for _, snap := range snapshots {
 		// 只导出有监听地址和端口的节点（代理池节点）
 		if snap.ListenAddress != "" && snap.Port > 0 {
+			// 使用外部 IP 替换 0.0.0.0
+			listenAddr := snap.ListenAddress
+			if (listenAddr == "0.0.0.0" || listenAddr == "::") && s.cfg.ExternalIP != "" {
+				listenAddr = s.cfg.ExternalIP
+			}
+
 			var proxyURI string
 			if s.cfg.ProxyUsername != "" && s.cfg.ProxyPassword != "" {
 				proxyURI = fmt.Sprintf("http://%s:%s@%s:%d",
 					s.cfg.ProxyUsername, s.cfg.ProxyPassword,
-					snap.ListenAddress, snap.Port)
+					listenAddr, snap.Port)
 			} else {
-				proxyURI = fmt.Sprintf("http://%s:%d", snap.ListenAddress, snap.Port)
+				proxyURI = fmt.Sprintf("http://%s:%d", listenAddr, snap.Port)
 			}
 			lines = append(lines, proxyURI)
 		}
