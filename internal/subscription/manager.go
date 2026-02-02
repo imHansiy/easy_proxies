@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,9 +41,10 @@ func WithLogger(l Logger) Option {
 type Manager struct {
 	mu sync.RWMutex
 
-	baseCfg *config.Config
-	boxMgr  *boxmgr.Manager
-	logger  Logger
+	baseCfg    *config.Config
+	boxMgr     *boxmgr.Manager
+	logger     Logger
+	httpClient *http.Client // Custom HTTP client with connection pooling
 
 	status        monitor.SubscriptionStatus
 	ctx           context.Context
@@ -58,12 +60,35 @@ type Manager struct {
 // New creates a SubscriptionManager.
 func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create optimized HTTP client with connection pooling
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
+
+	httpClient := &http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second, // Overall timeout
+	}
+
 	m := &Manager{
 		baseCfg:       cfg,
 		boxMgr:        boxMgr,
 		ctx:           ctx,
 		cancel:        cancel,
 		manualRefresh: make(chan struct{}, 1),
+		httpClient:    httpClient,
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -95,6 +120,11 @@ func (m *Manager) Start() {
 func (m *Manager) Stop() {
 	if m.cancel != nil {
 		m.cancel()
+	}
+
+	// Close idle connections
+	if m.httpClient != nil {
+		m.httpClient.CloseIdleConnections()
 	}
 }
 
@@ -404,7 +434,8 @@ func (m *Manager) fetchSubscription(subURL string, timeout time.Duration) ([]con
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Accept", "*/*")
 
-	resp, err := http.DefaultClient.Do(req)
+	// Use custom HTTP client with connection pooling
+	resp, err := m.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
@@ -414,7 +445,11 @@ func (m *Manager) fetchSubscription(subURL string, timeout time.Duration) ([]con
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	// Limit read size to prevent memory exhaustion
+	const maxBodySize = 10 * 1024 * 1024 // 10MB
+	limitedReader := io.LimitReader(resp.Body, maxBodySize)
+
+	body, err := io.ReadAll(limitedReader)
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}

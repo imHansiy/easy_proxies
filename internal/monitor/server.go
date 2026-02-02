@@ -3,23 +3,34 @@ package monitor
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	mathrand "math/rand"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"easy_proxies/internal/config"
+	"golang.org/x/sync/semaphore"
 )
 
 //go:embed assets/index.html
 var embeddedFS embed.FS
+
+// Session represents a user session with expiration.
+type Session struct {
+	Token     string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
 
 // NodeManager exposes config node CRUD and reload operations.
 type NodeManager interface {
@@ -62,7 +73,15 @@ type Server struct {
 	mgr          *Manager
 	srv          *http.Server
 	logger       *log.Logger
-	sessionToken string // 简单的 session token，重启后失效
+
+	// Session management
+	sessionMu  sync.RWMutex
+	sessions   map[string]*Session
+	sessionTTL time.Duration
+
+	// Concurrency control
+	probeSem *semaphore.Weighted
+
 	subRefresher SubscriptionRefresher
 	nodeMgr      NodeManager
 }
@@ -75,12 +94,24 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	if logger == nil {
 		logger = log.Default()
 	}
-	s := &Server{cfg: cfg, mgr: mgr, logger: logger}
 
-	// 生成随机 session token
-	tokenBytes := make([]byte, 32)
-	rand.Read(tokenBytes)
-	s.sessionToken = hex.EncodeToString(tokenBytes)
+	// Calculate max concurrent probes
+	maxConcurrentProbes := int64(runtime.NumCPU() * 4)
+	if maxConcurrentProbes < 10 {
+		maxConcurrentProbes = 10
+	}
+
+	s := &Server{
+		cfg:        cfg,
+		mgr:        mgr,
+		logger:     logger,
+		sessions:   make(map[string]*Session),
+		sessionTTL: 24 * time.Hour,
+		probeSem:   semaphore.NewWeighted(maxConcurrentProbes),
+	}
+
+	// Start session cleanup goroutine
+	go s.cleanupExpiredSessions()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
@@ -350,7 +381,11 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "data: %s\n\n", fmt.Sprintf(`{"type":"start","total":%d}`, total))
 	flusher.Flush()
 
-	// Probe all nodes concurrently
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+
+	// Probe all nodes with semaphore control
 	type probeResult struct {
 		tag     string
 		name    string
@@ -358,57 +393,78 @@ func (s *Server) handleProbeAll(w http.ResponseWriter, r *http.Request) {
 		err     string
 	}
 	results := make(chan probeResult, total)
+	var wg sync.WaitGroup
 
-	// Launch all probes concurrently
+	// Launch probes with semaphore control
 	for _, snap := range snapshots {
-		go func(snap Snapshot, mgr *Manager) {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			defer cancel()
-			latency, err := mgr.Probe(ctx, snap.Tag)
-			if err != nil {
-				results <- probeResult{tag: snap.Tag, name: snap.Name, latency: -1, err: err.Error()}
-			} else {
-				results <- probeResult{tag: snap.Tag, name: snap.Name, latency: latency.Milliseconds(), err: ""}
+		wg.Add(1)
+		go func(snap Snapshot) {
+			defer wg.Done()
+
+			// Acquire semaphore permit
+			if err := s.probeSem.Acquire(ctx, 1); err != nil {
+				results <- probeResult{
+					tag:  snap.Tag,
+					name: snap.Name,
+					err:  "probe cancelled: " + err.Error(),
+				}
+				return
 			}
-		}(snap, s.mgr)
+			defer s.probeSem.Release(1)
+
+			// Execute probe
+			probeCtx, probeCancel := context.WithTimeout(ctx, 10*time.Second)
+			defer probeCancel()
+
+			latency, err := s.mgr.Probe(probeCtx, snap.Tag)
+			if err != nil {
+				results <- probeResult{
+					tag:     snap.Tag,
+					name:    snap.Name,
+					latency: -1,
+					err:     err.Error(),
+				}
+			} else {
+				results <- probeResult{
+					tag:     snap.Tag,
+					name:    snap.Name,
+					latency: latency.Milliseconds(),
+					err:     "",
+				}
+			}
+		}(snap)
 	}
 
-	// Collect results as they come in with overall timeout
+	// Wait for all probes to complete
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
 	successCount := 0
 	failedCount := 0
-	timeout := time.After(30 * time.Second) // Overall timeout for all probes
+	count := 0
 
-	for i := 0; i < total; i++ {
-		select {
-		case result := <-results:
-			if result.err != "" {
-				failedCount++
-			} else {
-				successCount++
-			}
-			current := successCount + failedCount
-			progress := float64(current) / float64(total) * 100
-			eventData := fmt.Sprintf(`{"type":"progress","tag":"%s","name":"%s","latency":%d,"error":"%s","current":%d,"total":%d,"progress":%.1f}`,
-				result.tag, result.name, result.latency, result.err, current, total, progress)
-			fmt.Fprintf(w, "data: %s\n\n", eventData)
-			flusher.Flush()
-		case <-timeout:
-			// Overall timeout reached, report remaining nodes as timed out
-			remaining := total - (successCount + failedCount)
-			for j := 0; j < remaining; j++ {
-				failedCount++
-				current := successCount + failedCount
-				progress := float64(current) / float64(total) * 100
-				eventData := fmt.Sprintf(`{"type":"progress","tag":"unknown","name":"超时节点","latency":-1,"error":"overall timeout","current":%d,"total":%d,"progress":%.1f}`,
-					current, total, progress)
-				fmt.Fprintf(w, "data: %s\n\n", eventData)
-				flusher.Flush()
-			}
-			goto complete
+	for result := range results {
+		count++
+		if result.err != "" {
+			failedCount++
+		} else {
+			successCount++
 		}
-	}
 
-complete:
+		progress := float64(count) / float64(total) * 100
+		status := "success"
+		if result.err != "" {
+			status = "error"
+		}
+
+		eventData := fmt.Sprintf(`{"type":"progress","tag":"%s","name":"%s","latency":%d,"status":"%s","error":"%s","current":%d,"total":%d,"progress":%.1f}`,
+			result.tag, result.name, result.latency, status, result.err, count, total, progress)
+		fmt.Fprintf(w, "data: %s\n\n", eventData)
+		flusher.Flush()
+	}
 
 	// Send complete event
 	fmt.Fprintf(w, "data: %s\n\n", fmt.Sprintf(`{"type":"complete","total":%d,"success":%d,"failed":%d}`, total, successCount, failedCount))
@@ -433,7 +489,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 		// 检查 Cookie 中的 session token
 		cookie, err := r.Cookie("session_token")
-		if err == nil && cookie.Value == s.sessionToken {
+		if err == nil && s.validateSession(cookie.Value) {
 			next(w, r)
 			return
 		}
@@ -442,7 +498,7 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "" {
 			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if token == s.sessionToken {
+			if s.validateSession(token) {
 				next(w, r)
 				return
 			}
@@ -477,26 +533,38 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 验证密码
-	if req.Password != s.cfg.Password {
+	// 使用 constant-time 比较防止时序攻击
+	if !secureCompareStrings(req.Password, s.cfg.Password) {
+		// 添加随机延迟防止暴力破解
+		time.Sleep(time.Duration(100+mathrand.Intn(200)) * time.Millisecond)
 		w.WriteHeader(http.StatusUnauthorized)
 		writeJSON(w, map[string]any{"error": "密码错误"})
 		return
 	}
 
-	// 设置 cookie
+	// 创建新会话
+	session, err := s.createSession()
+	if err != nil {
+		s.logger.Printf("Failed to create session: %v", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": "服务器错误"})
+		return
+	}
+
+	// 设置 HttpOnly Cookie
 	http.SetCookie(w, &http.Cookie{
 		Name:     "session_token",
-		Value:    s.sessionToken,
+		Value:    session.Token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   false, // 生产环境应启用 HTTPS 并设为 true
 		SameSite: http.SameSiteStrictMode,
-		MaxAge:   86400 * 7, // 7天
+		MaxAge:   int(s.sessionTTL.Seconds()),
 	})
 
 	writeJSON(w, map[string]any{
 		"message": "登录成功",
-		"token":   s.sessionToken,
+		"token":   session.Token,
 	})
 }
 
@@ -768,4 +836,89 @@ func (s *Server) respondNodeError(w http.ResponseWriter, err error) {
 	}
 	w.WriteHeader(status)
 	writeJSON(w, map[string]any{"error": err.Error()})
+}
+
+// Session management functions
+
+// generateSessionToken creates a cryptographically secure random token.
+func (s *Server) generateSessionToken() (string, error) {
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		return "", fmt.Errorf("failed to generate session token: %w", err)
+	}
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+// createSession creates a new session with expiration.
+func (s *Server) createSession() (*Session, error) {
+	token, err := s.generateSessionToken()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	session := &Session{
+		Token:     token,
+		CreatedAt: now,
+		ExpiresAt: now.Add(s.sessionTTL),
+	}
+
+	s.sessionMu.Lock()
+	s.sessions[token] = session
+	s.sessionMu.Unlock()
+
+	return session, nil
+}
+
+// validateSession checks if a session token is valid and not expired.
+func (s *Server) validateSession(token string) bool {
+	s.sessionMu.RLock()
+	session, exists := s.sessions[token]
+	s.sessionMu.RUnlock()
+
+	if !exists {
+		return false
+	}
+
+	// Check if expired
+	if time.Now().After(session.ExpiresAt) {
+		s.sessionMu.Lock()
+		delete(s.sessions, token)
+		s.sessionMu.Unlock()
+		return false
+	}
+
+	return true
+}
+
+// cleanupExpiredSessions periodically removes expired sessions.
+func (s *Server) cleanupExpiredSessions() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		now := time.Now()
+		s.sessionMu.Lock()
+		for token, session := range s.sessions {
+			if now.After(session.ExpiresAt) {
+				delete(s.sessions, token)
+			}
+		}
+		s.sessionMu.Unlock()
+	}
+}
+
+// secureCompareStrings performs constant-time string comparison to prevent timing attacks.
+func secureCompareStrings(a, b string) bool {
+	aBytes := []byte(a)
+	bBytes := []byte(b)
+
+	// If lengths differ, still perform a dummy comparison to maintain constant time
+	if len(aBytes) != len(bBytes) {
+		dummy := make([]byte, 32)
+		subtle.ConstantTimeCompare(dummy, dummy)
+		return false
+	}
+
+	return subtle.ConstantTimeCompare(aBytes, bBytes) == 1
 }
