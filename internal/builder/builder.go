@@ -314,7 +314,7 @@ func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound
 			return option.Outbound{}, err
 		}
 		return option.Outbound{Type: C.TypeVLESS, Tag: tag, Options: &opts}, nil
-	case "hysteria2":
+	case "hysteria2", "hy2":
 		opts, err := buildHysteria2Options(parsed, skipCertVerify)
 		if err != nil {
 			return option.Outbound{}, err

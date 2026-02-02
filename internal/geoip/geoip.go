@@ -1,10 +1,18 @@
 package geoip
 
 import (
+	"bytes"
+	"fmt"
+	"io"
+	"log"
 	"net"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/oschwald/geoip2-golang"
 )
@@ -17,6 +25,11 @@ const (
 	RegionHK    = "hk"
 	RegionTW    = "tw"
 	RegionOther = "other"
+)
+
+// Default GeoIP database download URL
+const (
+	DefaultGeoIPURL = "https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-Country.mmdb"
 )
 
 // RegionInfo contains region details
@@ -33,11 +46,211 @@ type Lookup struct {
 	path string
 }
 
+// EnsureDatabase checks if the GeoIP database exists, and downloads it if not
+func EnsureDatabase(dbPath string) error {
+	if dbPath == "" {
+		return nil
+	}
+
+	// Check if file already exists and is valid
+	info, err := os.Stat(dbPath)
+	if err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("geoip database path is not a file: %s", dbPath)
+		}
+		if info.Size() > 0 {
+			return nil // File exists and has content
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat geoip database: %w", err)
+	}
+
+	log.Printf("📥 GeoIP database not found at %s, downloading...", dbPath)
+
+	// Create parent directory if needed
+	dir := filepath.Dir(dbPath)
+	if dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create directory: %w", err)
+		}
+	}
+
+	// Download with timeout
+	client := &http.Client{Timeout: 60 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, DefaultGeoIPURL, nil)
+	if err != nil {
+		return fmt.Errorf("create download request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: unexpected status %s", resp.Status)
+	}
+
+	// Download to temporary file
+	tempFile, err := os.CreateTemp(dir, ".geoip-*.mmdb")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	cleanup := true
+	defer func() {
+		if tempFile != nil {
+			tempFile.Close()
+		}
+		if cleanup {
+			os.Remove(tempPath)
+		}
+	}()
+
+	// Copy with progress tracking
+	progress := &progressWriter{total: resp.ContentLength}
+	reader := io.TeeReader(resp.Body, progress)
+	written, err := io.Copy(tempFile, reader)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+
+	// Verify download completeness
+	if resp.ContentLength > 0 && written < resp.ContentLength {
+		return fmt.Errorf("incomplete download (%d/%d bytes)", written, resp.ContentLength)
+	}
+
+	// Sync and close temp file
+	if err := tempFile.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	tempFile = nil
+
+	// Validate MMDB format
+	if err := validateMMDB(tempPath); err != nil {
+		return fmt.Errorf("validation failed: %w", err)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, dbPath); err != nil {
+		return fmt.Errorf("rename failed: %w", err)
+	}
+	cleanup = false
+
+	log.Printf("✅ GeoIP database downloaded successfully to %s", dbPath)
+	return nil
+}
+
+// progressWriter tracks download progress
+type progressWriter struct {
+	total       int64
+	downloaded  int64
+	lastPercent int64
+	lastLog     time.Time
+}
+
+func (p *progressWriter) Write(b []byte) (int, error) {
+	n := len(b)
+	p.downloaded += int64(n)
+
+	now := time.Now()
+	if p.total > 0 {
+		percent := p.downloaded * 100 / p.total
+		if percent >= 100 || percent >= p.lastPercent+10 || now.Sub(p.lastLog) >= 3*time.Second {
+			log.Printf("   Progress: %d%% (%d/%d bytes)", percent, p.downloaded, p.total)
+			p.lastPercent = percent
+			p.lastLog = now
+		}
+	} else if now.Sub(p.lastLog) >= 3*time.Second {
+		log.Printf("   Downloaded: %d bytes", p.downloaded)
+		p.lastLog = now
+	}
+
+	return n, nil
+}
+
+// validateMMDB performs basic validation of MMDB file format
+func validateMMDB(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < 1024 {
+		return fmt.Errorf("file too small (%d bytes)", info.Size())
+	}
+
+	// Check for MaxMind metadata in the last 8KB
+	const tailSize int64 = 8192
+	readSize := tailSize
+	if info.Size() < readSize {
+		readSize = info.Size()
+	}
+	if _, err := file.Seek(-readSize, io.SeekEnd); err != nil {
+		return err
+	}
+	buf := make([]byte, readSize)
+	if _, err := io.ReadFull(file, buf); err != nil && err != io.ErrUnexpectedEOF {
+		return err
+	}
+	if !bytes.Contains(buf, []byte("MaxMind.com")) {
+		return fmt.Errorf("missing MaxMind metadata")
+	}
+
+	return nil
+}
+
+// downloadFile downloads a file from URL to the specified path
+func downloadFile(filepath string, url string) error {
+	// Create the file
+	out, err := os.Create(filepath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Get the data
+	resp, err := http.Get(url)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Check server response
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("bad status: %s", resp.Status)
+	}
+
+	// Writer the body to file
+	size, err := io.Copy(out, resp.Body)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("   Downloaded %d bytes", size)
+	return nil
+}
+
 // New creates a new GeoIP lookup instance
 func New(dbPath string) (*Lookup, error) {
 	if dbPath == "" {
 		return &Lookup{}, nil
 	}
+
+	// Ensure database exists (download if needed)
+	if err := EnsureDatabase(dbPath); err != nil {
+		return nil, fmt.Errorf("ensure database: %w", err)
+	}
+
 	db, err := geoip2.Open(dbPath)
 	if err != nil {
 		return nil, err

@@ -280,7 +280,7 @@ nodes:
 |----------|------------|----------|
 | VMess | `vmess://` | WebSocket, HTTP/2, gRPC, TLS |
 | VLESS | `vless://` | Reality, XTLS-Vision, multiple transports |
-| Hysteria2 | `hysteria2://` | Bandwidth control, obfuscation |
+| Hysteria2 | `hysteria2://` or `hy2://` | Bandwidth control, obfuscation |
 | Shadowsocks | `ss://` | Multiple ciphers |
 | Trojan | `trojan://` | TLS, multiple transports |
 
@@ -317,6 +317,8 @@ vless://uuid@server:port?encryption=none&security=reality&sni=example.com&fp=chr
 
 ```
 hysteria2://password@server:port?sni=example.com&insecure=0&obfs=salamander&obfs-password=xxx#Name
+# Or use shorthand
+hy2://password@server:port?sni=example.com&insecure=0&obfs=salamander&obfs-password=xxx#Name
 ```
 
 - `upMbps` / `downMbps`: Bandwidth limits

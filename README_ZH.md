@@ -10,6 +10,7 @@
 - **多种传输层**: TCP、WebSocket、HTTP/2、gRPC、HTTPUpgrade
 - **订阅链接支持**: 自动从订阅链接获取节点，支持 Base64、Clash YAML 等格式
 - **订阅定时刷新**: 自动定时刷新订阅，支持 WebUI 手动触发（⚠️ 刷新会导致连接中断）
+- **GeoIP 地域分区**: 自动识别节点地理位置，支持按地域筛选节点（首次启动自动下载数据库）
 - **节点池模式**: 自动故障转移、负载均衡
 - **多端口模式**: 每个节点独立监听端口
 - **混合模式**: 同时启用节点池 + 多端口，节点状态共享同步
@@ -281,7 +282,7 @@ nodes:
 |------|----------|------|
 | VMess | `vmess://` | WebSocket、HTTP/2、gRPC、TLS |
 | VLESS | `vless://` | Reality、XTLS-Vision、多传输层 |
-| Hysteria2 | `hysteria2://` | 带宽控制、混淆 |
+| Hysteria2 | `hysteria2://` 或 `hy2://` | 带宽控制、混淆 |
 | Shadowsocks | `ss://` | 多加密方式 |
 | Trojan | `trojan://` | TLS、多传输层 |
 
@@ -318,6 +319,8 @@ vless://uuid@server:port?encryption=none&security=reality&sni=example.com&fp=chr
 
 ```
 hysteria2://password@server:port?sni=example.com&insecure=0&obfs=salamander&obfs-password=xxx#名称
+# 或使用简写
+hy2://password@server:port?sni=example.com&insecure=0&obfs=salamander&obfs-password=xxx#名称
 ```
 
 - `upMbps` / `downMbps`: 带宽限制
