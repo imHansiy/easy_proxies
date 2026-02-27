@@ -20,9 +20,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	if err := cfg.ApplyEnvOverrides(); err != nil {
-		log.Fatalf("apply env overrides: %v", err)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -40,7 +40,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 ### Deployment
 - **Flexible Configuration**: Config file, node file, subscription links
 - **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite support for nodes and runtime state
-- **Environment Variables**: Supports `EASY_PROXIES_DB_DRIVER`, `EASY_PROXIES_DB_DSN`, `DATABASE_URL`, etc.
+- **Environment Variables**: Supports `DB_DRIVER`, `DB_DSN`, `DATABASE_URL`, etc.
 - **Multi-Architecture**: Docker images for both AMD64 and ARM64
 - **Password Protection**: WebUI authentication with secure session management
 
@@ -496,6 +496,29 @@ subscription_refresh:
 | 24000+ | Per-node ports (Multi-Port/Hybrid mode) |
 
 ## Docker Deployment
+
+### Render + PostgreSQL (Recommended)
+
+This repo includes a Render Blueprint at `render.yaml`.
+
+Quick steps:
+
+1. In Render, choose **New +** -> **Blueprint** and connect this repository
+2. Keep default blueprint resources (Web Service + PostgreSQL)
+3. Optional bootstrap: set `SUBSCRIPTIONS` for first-time node import
+4. Deploy and open the Render service URL for WebUI/API
+
+Render-related env vars supported by the app:
+
+- `PORT`: injected by Render
+- `RENDER_EXPOSE`: `management` (default, binds WebUI/API to `PORT`) or `proxy`
+- `SUBSCRIPTIONS`: optional bootstrap URLs (comma or newline separated)
+- `DB_DRIVER` / `DB_DSN`: database persistence
+- `LISTENER_USERNAME` / `LISTENER_PASSWORD`: proxy auth
+- `MANAGEMENT_PASSWORD`: WebUI login password
+
+> Note: Render Web Services expose only one public HTTP port. `management` mode is recommended by default for health checks and operations.
+> If no nodes are present yet, the service starts in monitor-only mode. Add nodes/subscriptions via WebUI/API and click reload.
 
 **Method 1: Host Network Mode (Recommended)**
 

@@ -68,6 +68,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		}
 	}
 
+	if len(cfg.Nodes) == 0 {
+		log.Printf("INFO: no nodes configured, starting in monitor-only mode (add nodes or subscriptions then reload)")
+	}
+
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
 	proxyPassword := cfg.Listener.Password

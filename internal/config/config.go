@@ -190,6 +190,10 @@ func Load(path string) (*Config, error) {
 		cfg.NodesFile = filepath.Join(configDir, cfg.NodesFile)
 	}
 
+	if err := cfg.ApplyEnvOverrides(); err != nil {
+		return nil, fmt.Errorf("apply env overrides: %w", err)
+	}
+
 	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
@@ -322,7 +326,10 @@ func (c *Config) normalize() error {
 	}
 
 	if len(c.Nodes) == 0 {
-		return errors.New("config.nodes cannot be empty (configure nodes in config or use nodes_file)")
+		if c.LogLevel == "" {
+			c.LogLevel = "info"
+		}
+		return nil
 	}
 	portCursor := c.MultiPort.BasePort
 	for idx := range c.Nodes {
@@ -491,7 +498,10 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 
 	if len(c.Nodes) == 0 {
-		return errors.New("config.nodes cannot be empty")
+		if c.LogLevel == "" {
+			c.LogLevel = "info"
+		}
+		return nil
 	}
 
 	// Build set of ports already assigned from portMap
@@ -1119,43 +1129,40 @@ func (c *Config) SaveSubscriptions() error {
 	return nil
 }
 
-// ApplyEnvOverrides overrides storage settings from environment variables.
-// Priority (high -> low):
-// 1) EASY_PROXIES_DB_*
-// 2) EASY_PROXIES_PG_DSN
+// ApplyEnvOverrides applies runtime settings from environment variables.
+// Storage DSN priority (high -> low):
+// 1) DB_*
+// 2) PG_DSN
 // 3) DATABASE_URL
 func (c *Config) ApplyEnvOverrides() error {
 	if c == nil {
 		return nil
 	}
 
-	if v, ok := os.LookupEnv("EASY_PROXIES_DB_DRIVER"); ok {
+	if v, ok, _ := lookupEnvAlias("DB_DRIVER"); ok {
 		v = strings.ToLower(strings.TrimSpace(v))
 		if v != "" {
 			c.Storage.Driver = v
 		}
 	}
 
-	if v, ok := os.LookupEnv("EASY_PROXIES_DB_DSN"); ok {
+	if v, ok, _ := lookupEnvAlias("DB_DSN"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" {
 			c.Storage.DSN = v
 		}
 	}
 
-	if v, ok := os.LookupEnv("EASY_PROXIES_DB_AUTO_MIGRATE"); ok {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			parsed, err := strconv.ParseBool(v)
-			if err != nil {
-				return fmt.Errorf("invalid EASY_PROXIES_DB_AUTO_MIGRATE: %w", err)
-			}
-			c.Storage.AutoMigrate = &parsed
+	if v, ok, key := lookupEnvAlias("DB_AUTO_MIGRATE"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
 		}
+		c.Storage.AutoMigrate = &parsed
 	}
 
 	if c.Storage.DSN == "" {
-		if v, ok := os.LookupEnv("EASY_PROXIES_PG_DSN"); ok {
+		if v, ok, _ := lookupEnvAlias("PG_DSN"); ok {
 			v = strings.TrimSpace(v)
 			if v != "" {
 				c.Storage.DSN = v
@@ -1182,7 +1189,220 @@ func (c *Config) ApplyEnvOverrides() error {
 		c.Storage.Driver = inferDriverFromDSN(c.Storage.DSN)
 	}
 
+	if v, ok, _ := lookupEnvAlias("MODE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Mode = v
+		}
+	}
+
+	if v, ok, _ := lookupEnvAlias("LOG_LEVEL"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.LogLevel = v
+		}
+	}
+
+	if v, ok, _ := lookupEnvAlias("EXTERNAL_IP"); ok {
+		c.ExternalIP = strings.TrimSpace(v)
+	}
+
+	if v, ok, key := lookupEnvAlias("SKIP_CERT_VERIFY"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SkipCertVerify = parsed
+	}
+
+	if v, ok, _ := lookupEnvAlias("PROBE_TARGET"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Management.ProbeTarget = v
+		}
+	}
+
+	managementEnabledOverridden := false
+	if v, ok, key := lookupEnvAlias("MANAGEMENT_ENABLED"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
+		}
+		parsedValue := parsed
+		c.Management.Enabled = &parsedValue
+		managementEnabledOverridden = true
+	}
+
+	managementListenOverridden := false
+	if v, ok, _ := lookupEnvAlias("MANAGEMENT_LISTEN"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Management.Listen = v
+			managementListenOverridden = true
+		}
+	}
+
+	if v, ok, _ := lookupEnvAlias("MANAGEMENT_PASSWORD"); ok {
+		c.Management.Password = strings.TrimSpace(v)
+	}
+
+	listenerAddressOverridden := false
+	if v, ok, _ := lookupEnvAlias("LISTENER_ADDRESS"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Listener.Address = v
+			listenerAddressOverridden = true
+		}
+	}
+
+	listenerPortOverridden := false
+	if v, ok, key := lookupEnvAlias("LISTENER_PORT"); ok {
+		port, err := parsePortEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Listener.Port = port
+		listenerPortOverridden = true
+	}
+
+	if v, ok, _ := lookupEnvAlias("LISTENER_USERNAME"); ok {
+		c.Listener.Username = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("LISTENER_PASSWORD"); ok {
+		c.Listener.Password = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("NODES_FILE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			if !filepath.IsAbs(v) && c.filePath != "" {
+				v = filepath.Join(filepath.Dir(c.filePath), v)
+			}
+			c.NodesFile = v
+		}
+	}
+
+	if v, ok, _ := lookupEnvAlias("SUBSCRIPTIONS"); ok {
+		c.Subscriptions = parseSubscriptionEnvList(v)
+	} else if v, ok, _ := lookupEnvAlias("SUBSCRIPTION"); ok {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			c.Subscriptions = nil
+		} else {
+			c.Subscriptions = []string{v}
+		}
+	}
+
+	// Render Web Service injects PORT dynamically.
+	// RENDER_EXPOSE controls which endpoint binds to PORT:
+	// - management (default): management.listen
+	// - proxy: listener.address:listener.port
+	if portRaw, ok := os.LookupEnv("PORT"); ok {
+		port, err := parsePortEnv("PORT", portRaw)
+		if err != nil {
+			return err
+		}
+
+		expose := ""
+		if v, ok, _ := lookupEnvAlias("RENDER_EXPOSE"); ok {
+			expose = strings.ToLower(strings.TrimSpace(v))
+		}
+		if expose == "" {
+			expose = "management"
+		}
+
+		switch expose {
+		case "management", "monitor", "webui":
+			if managementEnabledOverridden && !c.ManagementEnabled() {
+				return errors.New("RENDER_EXPOSE=management requires MANAGEMENT_ENABLED=true")
+			}
+			enabled := true
+			c.Management.Enabled = &enabled
+			if !managementListenOverridden {
+				c.Management.Listen = net.JoinHostPort("0.0.0.0", strconv.Itoa(int(port)))
+			}
+		case "proxy":
+			if !listenerAddressOverridden {
+				c.Listener.Address = "0.0.0.0"
+			}
+			if !listenerPortOverridden {
+				c.Listener.Port = port
+			}
+		default:
+			return fmt.Errorf("invalid RENDER_EXPOSE %q (use proxy or management)", expose)
+		}
+	}
+
 	return nil
+}
+
+func parseBoolEnv(key, raw string) (bool, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return false, fmt.Errorf("invalid %s: empty value", key)
+	}
+	parsed, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func parsePortEnv(key, raw string) (uint16, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return 0, fmt.Errorf("invalid %s: empty value", key)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if n <= 0 || n > 65535 {
+		return 0, fmt.Errorf("invalid %s: must be between 1 and 65535", key)
+	}
+	return uint16(n), nil
+}
+
+func parseSubscriptionEnvList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		switch r {
+		case ',', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, item := range parts {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func lookupEnvAlias(primary string, legacy ...string) (value string, ok bool, key string) {
+	if v, found := os.LookupEnv(primary); found {
+		return v, true, primary
+	}
+	for _, envKey := range legacy {
+		if v, found := os.LookupEnv(envKey); found {
+			return v, true, envKey
+		}
+	}
+	return "", false, ""
 }
 
 func inferDriverFromDSN(dsn string) string {

@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: easy-proxies
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: true
+    healthCheckPath: /
+    envVars:
+      # Render Web Service exposes one HTTP port only.
+      # management: expose WebUI/API on Render public URL (recommended).
+      # proxy: bind proxy listener to PORT (may not fit Render HTTP health checks).
+      - key: RENDER_EXPOSE
+        value: management
+
+      # Database persistence (recommended on Render)
+      - key: DB_DRIVER
+        value: postgres
+      - key: DB_DSN
+        fromDatabase:
+          name: easy-proxies-db
+          property: connectionString
+      - key: DB_AUTO_MIGRATE
+        value: "true"
+
+      # Optional bootstrap source (comma or newline separated).
+      # If omitted and DB has no nodes yet, service starts in monitor-only mode.
+      - key: SUBSCRIPTIONS
+        sync: false
+
+      # Optional secrets (override config file defaults)
+      - key: LISTENER_USERNAME
+        sync: false
+      - key: LISTENER_PASSWORD
+        sync: false
+      - key: MANAGEMENT_PASSWORD
+        sync: false
+      - key: EXTERNAL_IP
+        sync: false
+
+databases:
+  - name: easy-proxies-db
+    plan: starter

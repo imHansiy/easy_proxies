@@ -115,6 +115,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.mu.Unlock()
 
 	// Try to start, with automatic port conflict resolution
+	if len(cfg.Nodes) == 0 {
+		m.logger.Warnf("no nodes configured, starting monitor-only mode; add nodes/subscriptions and trigger reload")
+		return nil
+	}
+
 	var instance *box.Box
 	maxRetries := 10
 	for retry := 0; retry < maxRetries; retry++ {
@@ -174,18 +179,33 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	}
 
 	m.mu.Lock()
-	if m.currentBox == nil {
-		m.mu.Unlock()
-		return errors.New("manager not started")
-	}
 	ctx := m.baseCtx
 	oldBox := m.currentBox
 	oldCfg := m.cfg
-	m.currentBox = nil // Mark as reloading
+	if oldBox != nil {
+		m.currentBox = nil // Mark as reloading
+	}
 	m.mu.Unlock()
 
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if len(newCfg.Nodes) == 0 {
+		if oldBox != nil {
+			m.logger.Infof("stopping old instance (switching to monitor-only mode)...")
+			if err := oldBox.Close(); err != nil {
+				m.logger.Warnf("error closing old instance: %v", err)
+			}
+		}
+		pool.ResetSharedStateStore()
+		m.applyConfigSettings(newCfg)
+		m.mu.Lock()
+		m.currentBox = nil
+		m.cfg = newCfg
+		m.mu.Unlock()
+		m.logger.Warnf("reload completed in monitor-only mode: no nodes configured")
+		return nil
 	}
 
 	m.logger.Infof("reloading with %d nodes", len(newCfg.Nodes))
@@ -211,7 +231,9 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		var err error
 		instance, err = m.createBox(ctx, newCfg)
 		if err != nil {
-			m.rollbackToOldConfig(ctx, oldCfg)
+			if oldBox != nil {
+				m.rollbackToOldConfig(ctx, oldCfg)
+			}
 			return fmt.Errorf("create new box: %w", err)
 		}
 		if err = instance.Start(); err != nil {
@@ -224,7 +246,9 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 					continue
 				}
 			}
-			m.rollbackToOldConfig(ctx, oldCfg)
+			if oldBox != nil {
+				m.rollbackToOldConfig(ctx, oldCfg)
+			}
 			return fmt.Errorf("start new box: %w", err)
 		}
 		break // Success
@@ -235,6 +259,10 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 	m.mu.Lock()
 	m.currentBox = instance
 	m.cfg = newCfg
+	if m.monitorMgr != nil && !m.healthCheckStarted {
+		m.monitorMgr.StartPeriodicHealthCheck(periodicHealthInterval, periodicHealthTimeout)
+		m.healthCheckStarted = true
+	}
 	m.mu.Unlock()
 
 	m.logger.Infof("reload completed successfully with %d nodes", len(newCfg.Nodes))

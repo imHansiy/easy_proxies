@@ -40,7 +40,7 @@
 ### 部署
 - **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
 - **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点与运行时状态可持久化
-- **环境变量配置**: 支持 `EASY_PROXIES_DB_DRIVER`、`EASY_PROXIES_DB_DSN`、`DATABASE_URL` 等
+- **环境变量配置**: 支持 `DB_DRIVER`、`DB_DSN`、`DATABASE_URL` 等
 - **多架构支持**: Docker 镜像同时支持 AMD64 和 ARM64
 - **密码保护**: WebUI 支持密码认证，安全的会话管理
 
@@ -521,6 +521,27 @@ Render 运行环境可能会重建容器，建议启用 `storage.driver + storag
 - 配置节点（`/api/nodes/config`）
 - 管理设置（`external_ip`、`probe_target`、`skip_cert_verify`）
 - 运行时状态（失败计数、黑名单状态、探测可用性）
+
+仓库已提供 Render Blueprint：`render.yaml`。
+
+**快速部署步骤：**
+
+1. 在 Render 里选择 **New +** -> **Blueprint**，指向本仓库
+2. 保留 `render.yaml` 默认设置（会自动创建 Web Service + PostgreSQL）
+3. 可选：首次导入节点可填写 `SUBSCRIPTIONS`
+4. 部署完成后，访问 Render 分配的域名即可打开 WebUI
+
+**Render 相关环境变量（已内置支持）：**
+
+- `PORT`：Render 自动注入
+- `RENDER_EXPOSE`：`management`（默认，绑定 WebUI/API 到 `PORT`）或 `proxy`
+- `SUBSCRIPTIONS`：可选的初始化订阅链接（支持逗号或换行分隔）
+- `DB_DRIVER` / `DB_DSN`：数据库配置
+- `LISTENER_USERNAME` / `LISTENER_PASSWORD`：代理入口认证
+- `MANAGEMENT_PASSWORD`：管理面板登录密码
+
+> 注意：Render Web Service 只公开一个 HTTP 端口。默认推荐 `management` 暴露模式（便于健康检查和管理）。
+> 若当前没有任何节点，服务会以仅管理模式启动。可在 WebUI/API 添加节点或订阅后再点击重载。
 
 **方式一：主机网络模式（推荐）**
 

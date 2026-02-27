@@ -72,9 +72,9 @@ storage:
   # driver: postgres | mysql | sqlite
   # Render 推荐 postgres
   # 也可通过环境变量覆盖：
-  # - EASY_PROXIES_DB_DRIVER
-  # - EASY_PROXIES_DB_DSN
-  # - EASY_PROXIES_DB_AUTO_MIGRATE
+  # - DB_DRIVER
+  # - DB_DSN
+  # - DB_AUTO_MIGRATE
   # - DATABASE_URL（Render 常用）
   driver: ""
   dsn: ""
