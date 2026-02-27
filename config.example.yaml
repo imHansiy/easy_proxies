@@ -38,6 +38,14 @@ pool:
   failure_threshold: 3
   # 黑名单持续时间
   blacklist_duration: 24h
+  # 同一节点访问同一域名失败阈值（用于域名级黑名单，如 CF 盾牌）
+  domain_failure_threshold: 2
+  # 域名级黑名单持续时间
+  domain_blacklist_duration: 12h
+  # 黑名单域名后台复查间隔（成功后自动移出黑名单）
+  domain_recheck_interval: 10m
+  # 复查单次超时
+  domain_recheck_timeout: 10s
 
 # ───────────────────────────────────────────────────────────────
 # 多端口模式配置（multi-port / hybrid 模式使用）
@@ -56,6 +64,31 @@ management:
   listen: 0.0.0.0:9091                               # 监听地址
   probe_target: http://cp.cloudflare.com/generate_204  # 健康检查目标
   password: ""                                       # WebUI 访问密码，为空则不需要密码
+
+# ───────────────────────────────────────────────────────────────
+# 数据持久化（可选，支持 PostgreSQL / MySQL / SQLite）
+# ───────────────────────────────────────────────────────────────
+storage:
+  # driver: postgres | mysql | sqlite
+  # Render 推荐 postgres
+  # 也可通过环境变量覆盖：
+  # - EASY_PROXIES_DB_DRIVER
+  # - EASY_PROXIES_DB_DSN
+  # - EASY_PROXIES_DB_AUTO_MIGRATE
+  # - DATABASE_URL（Render 常用）
+  driver: ""
+  dsn: ""
+  auto_migrate: true
+  # 兼容旧配置（可选）：仍可使用下面分段配置
+  postgres:
+    enabled: false
+    dsn: "postgres://user:password@host:5432/dbname?sslmode=require"
+  mysql:
+    enabled: false
+    dsn: "user:password@tcp(127.0.0.1:3306)/easy_proxies?charset=utf8mb4&parseTime=True&loc=Local"
+  sqlite:
+    enabled: false
+    dsn: "./easy_proxies.db"
 
 # ───────────────────────────────────────────────────────────────
 # GeoIP 地域分区配置（可选）
@@ -113,7 +146,7 @@ geoip:
 # ───────────────────────────────────────────────────────────────
 nodes:
   # 最简配置：只需 URI，名称从 # 后自动提取
-  - uri: "vless://uuid@server:443?security=tls&type=ws&path=/path#节点名称"
+  # - uri: "vless://uuid@server:443?security=tls&type=ws&path=/path#节点名称"
 
   # 完整配置：手动指定名称和端口
   # - name: "自定义名称"

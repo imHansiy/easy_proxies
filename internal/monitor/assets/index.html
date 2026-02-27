@@ -805,6 +805,223 @@
       margin-top: 4px;
     }
 
+    .config-node-source {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: rgba(0, 122, 255, 0.12);
+      color: var(--primary);
+    }
+
+    .config-group {
+      background: rgba(255, 255, 255, 0.55);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .config-group-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .config-group-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .config-group-count {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .subscription-tree-card {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 16px;
+    }
+
+    .subscription-tree-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .subscription-tree-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: var(--text-primary);
+    }
+
+    .subscription-tree-url {
+      font-size: 12px;
+      color: var(--text-secondary);
+      font-family: "SF Mono", Menlo, Monaco, monospace;
+      word-break: break-all;
+      line-height: 1.4;
+    }
+
+    .subscription-tree-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: flex-end;
+      flex-shrink: 0;
+    }
+
+    .subscription-collapsed-hint {
+      border-top: 1px dashed var(--border);
+      padding-top: 10px;
+      color: var(--text-secondary);
+      font-size: 12px;
+    }
+
+    .subscription-node-tree {
+      border-top: 1px dashed var(--border);
+      padding-top: 10px;
+    }
+
+    .subscription-node-root {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      font-family: "SF Mono", Menlo, Monaco, monospace;
+    }
+
+    .subscription-node-list {
+      display: grid;
+      gap: 6px;
+      padding-left: 18px;
+    }
+
+    .subscription-node-item {
+      font-size: 13px;
+      color: var(--text-primary);
+      display: grid;
+      gap: 4px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .subscription-node-summary {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      list-style: none;
+    }
+
+    .subscription-node-summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .subscription-node-name {
+      white-space: normal;
+      word-break: break-word;
+      line-height: 1.4;
+    }
+
+    .subscription-node-uri-full {
+      font-size: 12px;
+      color: var(--text-secondary);
+      word-break: break-all;
+      line-height: 1.4;
+      font-family: "SF Mono", Menlo, Monaco, monospace;
+    }
+
+    .subscription-node-port {
+      font-size: 11px;
+      color: var(--primary);
+      flex-shrink: 0;
+    }
+
+    .subscription-node-latency {
+      font-size: 11px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .subscription-node-latency.good {
+      background: rgba(52, 199, 89, 0.14);
+      color: #22863a;
+    }
+
+    .subscription-node-latency.warn {
+      background: rgba(255, 149, 0, 0.14);
+      color: #ad6800;
+    }
+
+    .subscription-node-latency.bad {
+      background: rgba(255, 59, 48, 0.14);
+      color: #cf1322;
+    }
+
+    .subscription-node-latency.none {
+      background: rgba(142, 142, 147, 0.16);
+      color: var(--text-secondary);
+    }
+
+    .subscription-load-more {
+      margin-top: 6px;
+      width: fit-content;
+    }
+
+    .subscription-log-list {
+      max-height: 320px;
+      overflow: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.6);
+      padding: 8px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .subscription-log-item {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      background: #fff;
+    }
+
+    .subscription-log-meta {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .subscription-log-message {
+      font-size: 13px;
+      color: var(--text-primary);
+      word-break: break-word;
+    }
+
     .config-node-actions {
       display: flex;
       gap: 8px;
@@ -1119,6 +1336,23 @@
         ⚠️ 当前使用订阅模式：您的修改会保存到 nodes.txt，但下次刷新订阅时将被覆盖
       </div>
 
+      <div class="manage-header" style="margin-top: 28px; margin-bottom: 12px;">
+        <h2>订阅管理</h2>
+        <p class="manage-desc">在网页中添加/删除订阅链接。添加后可点击上方“刷新订阅”立即生效。</p>
+      </div>
+      <div class="manage-actions" style="justify-content: flex-start; gap: 8px; margin-bottom: 12px;">
+        <input type="url" id="subscriptionUrlInput" class="form-input" style="max-width: 720px;" placeholder="https://example.com/api/v1/client/subscribe?token=..." />
+        <button class="btn btn-primary" onclick="addSubscription()">添加订阅</button>
+        <button class="btn btn-secondary" id="refreshSubManageBtn" onclick="refreshSubscription()" style="display: none;">
+          <span id="refreshSubManageText">刷新订阅</span>
+        </button>
+      </div>
+      <div id="subscriptionsContainer" class="config-nodes-grid" style="margin-bottom: 20px;"></div>
+      <div id="subscriptionsEmptyState" class="empty" style="display:none; margin-bottom: 24px;">
+        <h3>暂无订阅</h3>
+        <p>添加订阅后可在监控页手动刷新订阅</p>
+      </div>
+
       <div id="configNodesContainer" class="config-nodes-grid"></div>
 
       <div id="configEmptyState" class="empty" style="display: none;">
@@ -1126,8 +1360,8 @@
           <circle cx="32" cy="32" r="30" stroke="currentColor" stroke-width="4"/>
           <path d="M32 16v32M16 32h32" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
         </svg>
-        <h3>暂无配置节点</h3>
-        <p>点击"添加节点"开始配置</p>
+        <h3 id="configEmptyTitle">暂无配置节点</h3>
+        <p id="configEmptyDesc">点击"添加节点"开始配置</p>
       </div>
     </div><!-- end manageTab -->
 
@@ -1248,6 +1482,20 @@
           <button type="submit" class="btn btn-primary">保存</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- 订阅日志弹窗 -->
+  <div id="subscriptionLogOverlay" class="login-overlay">
+    <div class="login-modal" style="max-width: 860px;">
+      <div class="login-header">
+        <h2>🧾 订阅更新日志</h2>
+        <p id="subscriptionLogTitle">-</p>
+      </div>
+      <div class="subscription-log-list" id="subscriptionLogList"></div>
+      <div class="modal-buttons" style="margin-top: 12px;">
+        <button type="button" class="btn btn-secondary" onclick="hideSubscriptionLogs()">关闭</button>
+      </div>
     </div>
   </div>
 
@@ -1417,11 +1665,25 @@
         if (!res.ok) throw new Error('请求失败');
         const data = await res.json();
         render(data.nodes || []);
+        updateRuntimeNodeCache(data.nodes || []);
         updateStats(data);
+        if (document.getElementById('manageTab').classList.contains('active')) {
+          renderSubscriptions();
+        }
         document.getElementById('lastUpdate').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
       } catch (err) {
         showToast('刷新失败: ' + err.message, 'error');
       }
+    }
+
+    function updateRuntimeNodeCache(nodes) {
+      const map = new Map();
+      (nodes || []).forEach(node => {
+        const uri = (node && node.uri) ? String(node.uri) : '';
+        if (!uri) return;
+        map.set(uri, node);
+      });
+      runtimeNodesByUri = map;
     }
 
     function updateStats(payload) {
@@ -1778,22 +2040,49 @@
     function updateSubscriptionUI(data) {
       const card = document.getElementById('subscriptionCard');
       const btn = document.getElementById('refreshSubBtn');
+      const btnManage = document.getElementById('refreshSubManageBtn');
       const statusEl = document.getElementById('subscriptionStatus');
       const trendEl = document.getElementById('subscriptionTrend');
+      const topText = document.getElementById('refreshSubText');
+      const manageText = document.getElementById('refreshSubManageText');
+
+      const hasNextRefresh = data.next_refresh && data.next_refresh !== '0001-01-01T00:00:00Z';
+      const nextRefreshText = hasNextRefresh ? formatTime(data.next_refresh) : '未计划';
 
       if (!data.enabled) {
+        // Added subscriptions but refresher not active yet (requires service restart)
+        if (subscriptions.length > 0) {
+          card.style.display = 'block';
+          btn.style.display = 'inline-flex';
+          if (btnManage) btnManage.style.display = 'inline-flex';
+          btn.disabled = true;
+          if (btnManage) btnManage.disabled = true;
+          if (topText) topText.textContent = '重启后可刷新';
+          if (manageText) manageText.textContent = '重启后可刷新';
+          statusEl.textContent = '待重启';
+          statusEl.style.color = 'var(--warning)';
+          trendEl.textContent = '已添加订阅，重启服务后可使用刷新按钮';
+          trendEl.style.color = 'var(--warning)';
+          return;
+        }
         card.style.display = 'none';
         btn.style.display = 'none';
+        if (btnManage) btnManage.style.display = 'none';
         return;
       }
 
       card.style.display = 'block';
       btn.style.display = 'inline-flex';
+      if (btnManage) btnManage.style.display = 'inline-flex';
+      btn.disabled = false;
+      if (btnManage) btnManage.disabled = false;
+      if (topText) topText.textContent = '刷新订阅';
+      if (manageText) manageText.textContent = '刷新订阅';
 
       if (data.is_refreshing) {
         statusEl.textContent = '刷新中...';
         statusEl.style.color = 'var(--warning)';
-        trendEl.textContent = '正在获取订阅...';
+        trendEl.textContent = '正在获取订阅...（下次自动: ' + nextRefreshText + '）';
         return;
       }
 
@@ -1801,13 +2090,13 @@
       statusEl.style.color = data.last_error ? 'var(--error)' : 'var(--success)';
 
       if (data.last_error) {
-        trendEl.textContent = '上次失败: ' + data.last_error;
+        trendEl.textContent = '上次失败: ' + data.last_error + '（下次自动: ' + nextRefreshText + '）';
         trendEl.style.color = 'var(--error)';
       } else if (data.last_refresh && data.last_refresh !== '0001-01-01T00:00:00Z') {
-        trendEl.textContent = '上次刷新: ' + formatTime(data.last_refresh);
+        trendEl.textContent = '上次刷新: ' + formatTime(data.last_refresh) + '（下次自动: ' + nextRefreshText + '）';
         trendEl.style.color = 'var(--success)';
       } else {
-        trendEl.textContent = '等待首次刷新';
+        trendEl.textContent = '等待首次刷新（下次自动: ' + nextRefreshText + '）';
         trendEl.style.color = 'var(--text-secondary)';
       }
     }
@@ -1835,9 +2124,13 @@
 
       const btn = document.getElementById('refreshSubBtn');
       const text = document.getElementById('refreshSubText');
+      const btnManage = document.getElementById('refreshSubManageBtn');
+      const textManage = document.getElementById('refreshSubManageText');
 
-      btn.disabled = true;
-      text.textContent = '刷新中...';
+      if (btn) btn.disabled = true;
+      if (btnManage) btnManage.disabled = true;
+      if (text) text.textContent = '刷新中...';
+      if (textManage) textManage.textContent = '刷新中...';
 
       try {
         const res = await fetch('/api/subscription/refresh', { method: 'POST' });
@@ -1855,8 +2148,11 @@
       } catch (err) {
         showToast('订阅刷新失败: ' + err.message, 'error');
       } finally {
-        btn.disabled = false;
-        text.textContent = '刷新订阅';
+        if (btn) btn.disabled = false;
+        if (btnManage) btnManage.disabled = false;
+        if (text) text.textContent = '刷新订阅';
+        if (textManage) textManage.textContent = '刷新订阅';
+        fetchSubscriptionStatus();
       }
     }
 
@@ -2019,7 +2315,15 @@
     // ========== 节点管理功能 ==========
 
     let configNodes = [];
+    let subscriptions = [];
+    let subscriptionItems = [];
+    let configNodesLoadedAt = 0;
+    let runtimeNodesByUri = new Map();
+    const subscriptionExpanded = {};
+    const subscriptionVisibleCount = {};
     let isEditMode = false;
+    const SUB_NODE_PREVIEW_LIMIT = 10;
+    const CONFIG_NODES_CACHE_MS = 30000;
 
     // Tab 切换
     function switchTab(tabName) {
@@ -2030,16 +2334,16 @@
       document.getElementById(tabName + 'Tab').classList.add('active');
 
       if (tabName === 'manage') {
-        loadConfigNodes();
+        loadSubscriptions();
+        loadConfigNodes(false);
       } else if (tabName === 'debug') {
         loadDebugData();
       }
     }
 
-    // 加载配置节点列表
-    async function loadConfigNodes() {
+    async function loadSubscriptions() {
       try {
-        const res = await fetch('/api/nodes/config');
+        const res = await fetch('/api/subscriptions');
         if (res.status === 401) {
           showToast('请先登录', 'error');
           document.getElementById('loginOverlay').classList.add('show');
@@ -2047,8 +2351,306 @@
         }
         if (!res.ok) throw new Error('加载失败');
         const data = await res.json();
+        subscriptions = data.subscriptions || [];
+        if (Array.isArray(data.items) && data.items.length > 0) {
+          subscriptionItems = data.items;
+        } else {
+          subscriptionItems = subscriptions.map((url, index) => ({ index, url, node_count: 0 }));
+        }
+
+        const validIndexes = new Set(subscriptionItems.map((it, i) => (typeof it.index === 'number' ? it.index : i)));
+        Object.keys(subscriptionExpanded).forEach(key => {
+          const idx = Number(key);
+          if (!validIndexes.has(idx)) {
+            delete subscriptionExpanded[idx];
+            delete subscriptionVisibleCount[idx];
+          }
+        });
+
+        renderSubscriptions();
+      } catch (err) {
+        showToast('加载订阅失败: ' + err.message, 'error');
+      }
+    }
+
+    function renderSubscriptions() {
+      const container = document.getElementById('subscriptionsContainer');
+      const emptyState = document.getElementById('subscriptionsEmptyState');
+
+      if (!subscriptionItems.length) {
+        container.innerHTML = '';
+        emptyState.style.display = 'block';
+        return;
+      }
+
+      emptyState.style.display = 'none';
+      container.innerHTML = subscriptionItems.map((item, viewIndex) => {
+        const index = typeof item.index === 'number' ? item.index : viewIndex;
+        const sub = item.url || subscriptions[index] || '';
+        const nodes = nodesForSubscription(sub, index);
+        const knownCount = Math.max(nodes.length, Number(item.node_count || 0));
+        const expanded = !!subscriptionExpanded[index];
+        const visibleCount = subscriptionVisibleCount[index] || SUB_NODE_PREVIEW_LIMIT;
+        const shown = expanded ? nodes.slice(0, visibleCount) : [];
+        const remains = Math.max(0, nodes.length - shown.length);
+        const nodeList = shown.map(n => {
+          const latency = latencyBadgeForNode(n);
+          return `
+            <details class="subscription-node-item">
+              <summary class="subscription-node-summary">
+                <span class="subscription-node-name" title="${escapeHtml(n.name || '')}">• ${escapeHtml(n.name || '未命名节点')}</span>
+                <span class="subscription-node-latency ${latency.className}">${latency.text}</span>
+              </summary>
+              <div class="subscription-node-uri-full" title="${escapeHtml(n.uri || '')}">${escapeHtml(n.uri || '')}</div>
+              <span class="subscription-node-port">${n.port ? `端口: ${n.port}` : '端口: —'}</span>
+            </details>
+          `;
+        }).join('');
+
+        return `
+          <div class="subscription-tree-card" data-sub-index="${index}">
+            <div class="subscription-tree-header">
+              <div class="config-node-info">
+                <div class="subscription-tree-title">订阅源 ${index + 1}（${knownCount} 节点）</div>
+                <div class="subscription-tree-url" title="${escapeHtml(sub)}">${escapeHtml(sub)}</div>
+              </div>
+              <div class="subscription-tree-actions">
+                <button class="btn btn-secondary btn-sm" onclick="toggleSubscriptionExpand(${index})">${expanded ? '📁 收起节点' : '📂 展开节点'}</button>
+                <button class="btn btn-secondary btn-sm" onclick="editSubscription(${index})">✏️ 编辑订阅</button>
+                <button class="btn btn-warning btn-sm" onclick="refreshSubscriptionByIndex(${index})">🔄 更新刷新</button>
+                <button class="btn btn-secondary btn-sm" onclick="showSubscriptionLogs(${index})">🧾 更新日志</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteSubscription(${index})">🗑️ 删除订阅</button>
+              </div>
+            </div>
+
+            ${expanded ? `
+              <div class="subscription-node-tree">
+                <div class="subscription-node-root">订阅源 (Subscription) └── 节点 (Node)（默认展示前 ${SUB_NODE_PREVIEW_LIMIT} 个）</div>
+                <div class="subscription-node-list">
+                  ${nodeList || '<div class="subscription-node-item"><span class="subscription-node-name" style="color:var(--text-secondary)">暂无已加载节点（可手动刷新）</span></div>'}
+                </div>
+                ${remains > 0 ? `<button class="btn btn-secondary btn-sm subscription-load-more" onclick="showMoreSubscriptionNodes(${index})">显示更多 ${Math.min(SUB_NODE_PREVIEW_LIMIT, remains)} 个（剩余 ${remains}）</button>` : ''}
+              </div>
+            ` : '<div class="subscription-collapsed-hint">点击“展开节点”查看该订阅节点（展开默认显示前 10 个）</div>'}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function toggleSubscriptionExpand(index) {
+      subscriptionExpanded[index] = !subscriptionExpanded[index];
+      if (subscriptionExpanded[index] && !subscriptionVisibleCount[index]) {
+        subscriptionVisibleCount[index] = SUB_NODE_PREVIEW_LIMIT;
+      }
+      renderSubscriptions();
+    }
+
+    function showMoreSubscriptionNodes(index) {
+      const current = subscriptionVisibleCount[index] || SUB_NODE_PREVIEW_LIMIT;
+      subscriptionVisibleCount[index] = current + SUB_NODE_PREVIEW_LIMIT;
+      subscriptionExpanded[index] = true;
+      renderSubscriptions();
+    }
+
+    function latencyBadgeForNode(node) {
+      const runtime = runtimeNodesByUri.get(node.uri || '');
+      if (!runtime || typeof runtime.last_latency_ms !== 'number' || runtime.last_latency_ms < 0) {
+        return { text: '未测速', className: 'none' };
+      }
+      const ms = runtime.last_latency_ms;
+      if (ms < 120) {
+        return { text: `${ms}ms`, className: 'good' };
+      }
+      if (ms < 300) {
+        return { text: `${ms}ms`, className: 'warn' };
+      }
+      return { text: `${ms}ms`, className: 'bad' };
+    }
+
+    function nodesForSubscription(url, index) {
+      let nodes = configNodes.filter(n => n.source === 'subscription' && (n.source_ref || '') === url);
+      if (nodes.length > 0) return nodes;
+
+      // Fallback for old data without source_ref
+      const plainSubNodes = configNodes.filter(n => n.source === 'subscription');
+      if (plainSubNodes.length > 0 && subscriptions.length === 1) return plainSubNodes;
+
+      // If source_ref not yet persisted, use node_count as hint but still show empty list gracefully
+      const hint = subscriptionItems.find(it => (it.url || '') === url && typeof it.node_count === 'number');
+      if (hint && hint.node_count > 0 && plainSubNodes.length > 0 && index === 0) {
+        return plainSubNodes.slice(0, hint.node_count);
+      }
+      return [];
+    }
+
+    async function addSubscription() {
+      const input = document.getElementById('subscriptionUrlInput');
+      const url = (input.value || '').trim();
+      if (!url) {
+        showToast('请输入订阅链接', 'error');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/subscriptions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || '添加失败', 'error');
+          return;
+        }
+        input.value = '';
+        showToast(data.need_restart ? '订阅已添加，请重启服务后刷新订阅' : '订阅已添加，可点击“刷新订阅”生效', 'success');
+        subscriptions = data.subscriptions || subscriptions;
+        await loadSubscriptions();
+        await loadConfigNodes(true);
+        fetchSubscriptionStatus();
+      } catch (err) {
+        showToast('添加失败: ' + err.message, 'error');
+      }
+    }
+
+    async function editSubscription(index) {
+      const current = subscriptions[index] || '';
+      const next = prompt('编辑订阅链接', current);
+      if (next === null) return;
+      const url = next.trim();
+      if (!url) {
+        showToast('订阅链接不能为空', 'error');
+        return;
+      }
+      try {
+        const res = await fetch('/api/subscriptions/' + index, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || '更新失败', 'error');
+          return;
+        }
+        showToast(data.need_restart ? '订阅已更新，请重启后刷新' : '订阅已更新，可手动刷新', 'success');
+        subscriptions = data.subscriptions || subscriptions;
+        await loadSubscriptions();
+        fetchSubscriptionStatus();
+      } catch (err) {
+        showToast('更新失败: ' + err.message, 'error');
+      }
+    }
+
+    async function refreshSubscriptionByIndex(index) {
+      try {
+        const res = await fetch('/api/subscriptions/' + index + '/refresh', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || '刷新失败', 'error');
+          return;
+        }
+        showToast('订阅刷新成功', 'success');
+        await loadConfigNodes(true);
+        await loadSubscriptions();
+        fetchSubscriptionStatus();
+      } catch (err) {
+        showToast('刷新失败: ' + err.message, 'error');
+      }
+    }
+
+    async function showSubscriptionLogs(index) {
+      try {
+        const res = await fetch('/api/subscriptions/' + index + '/logs');
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || '加载日志失败', 'error');
+          return;
+        }
+        const logs = data.logs || [];
+        const list = document.getElementById('subscriptionLogList');
+        const title = document.getElementById('subscriptionLogTitle');
+        title.textContent = data.subscription || subscriptions[index] || '订阅日志';
+
+        if (!logs.length) {
+          list.innerHTML = '<div class="subscription-log-item"><div class="subscription-log-message" style="color:var(--text-secondary)">暂无更新日志</div></div>';
+        } else {
+          list.innerHTML = logs.slice().reverse().map(item => {
+            const time = item.time ? formatTime(item.time) : '-';
+            const level = (item.level || 'info').toUpperCase();
+            const nodeCount = item.node_count ? ` · 节点 ${item.node_count}` : '';
+            const duration = item.duration_ms ? ` · ${item.duration_ms}ms` : '';
+            return `
+              <div class="subscription-log-item">
+                <div class="subscription-log-meta">${time} · ${escapeHtml(level)}${nodeCount}${duration}</div>
+                <div class="subscription-log-message">${escapeHtml(item.message || '')}</div>
+              </div>
+            `;
+          }).join('');
+        }
+
+        document.getElementById('subscriptionLogOverlay').classList.add('show');
+      } catch (err) {
+        showToast('加载日志失败: ' + err.message, 'error');
+      }
+    }
+
+    function hideSubscriptionLogs() {
+      document.getElementById('subscriptionLogOverlay').classList.remove('show');
+    }
+
+    async function deleteSubscription(index) {
+      if (!confirm('确定要删除该订阅吗？')) return;
+      try {
+        const res = await fetch('/api/subscriptions/' + index, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || '删除失败', 'error');
+          return;
+        }
+        subscriptions = data.subscriptions || [];
+        await loadSubscriptions();
+        await loadConfigNodes(true);
+        showToast('订阅已删除', 'success');
+        fetchSubscriptionStatus();
+      } catch (err) {
+        showToast('删除失败: ' + err.message, 'error');
+      }
+    }
+
+    // 加载配置节点列表
+    async function loadConfigNodes(force = false) {
+      try {
+        const now = Date.now();
+        if (!force && configNodesLoadedAt > 0 && (now - configNodesLoadedAt) < CONFIG_NODES_CACHE_MS) {
+          renderConfigNodes();
+          renderSubscriptions();
+          return;
+        }
+
+        const [configRes, runtimeRes] = await Promise.all([
+          fetch('/api/nodes/config'),
+          fetch('/api/nodes')
+        ]);
+
+        if (configRes.status === 401 || runtimeRes.status === 401) {
+          showToast('请先登录', 'error');
+          document.getElementById('loginOverlay').classList.add('show');
+          return;
+        }
+
+        if (!configRes.ok) throw new Error('加载失败');
+        const data = await configRes.json();
         configNodes = data.nodes || [];
+
+        if (runtimeRes.ok) {
+          const runtimeData = await runtimeRes.json();
+          updateRuntimeNodeCache(runtimeData.nodes || []);
+        }
+
+        configNodesLoadedAt = now;
         renderConfigNodes();
+        renderSubscriptions();
 
         // Check if subscription mode is active and show warning
         const subWarning = document.getElementById('subscriptionWarning');
@@ -2067,32 +2669,69 @@
     function renderConfigNodes() {
       const container = document.getElementById('configNodesContainer');
       const emptyState = document.getElementById('configEmptyState');
+      const emptyTitle = document.getElementById('configEmptyTitle');
+      const emptyDesc = document.getElementById('configEmptyDesc');
 
-      if (configNodes.length === 0) {
+      const editableItems = configNodes
+        .map((node, index) => ({ node, index }))
+        .filter(item => item.node.source !== 'subscription');
+
+      if (editableItems.length === 0) {
         container.innerHTML = '';
+        if (configNodes.some(item => item.source === 'subscription')) {
+          if (emptyTitle) emptyTitle.textContent = '暂无手动节点';
+          if (emptyDesc) emptyDesc.textContent = '订阅节点已在上方按订阅源展示';
+        } else {
+          if (emptyTitle) emptyTitle.textContent = '暂无配置节点';
+          if (emptyDesc) emptyDesc.textContent = '点击"添加节点"开始配置';
+        }
         emptyState.style.display = 'block';
         return;
       }
 
+      if (emptyTitle) emptyTitle.textContent = '暂无配置节点';
+      if (emptyDesc) emptyDesc.textContent = '点击"添加节点"开始配置';
+
       emptyState.style.display = 'none';
-      container.innerHTML = configNodes.map((node, index) => {
-        const truncatedUri = node.uri.length > 60 ? node.uri.substring(0, 60) + '...' : node.uri;
+      const groups = buildNodeGroups(editableItems.map(item => item.node));
+      container.innerHTML = groups.map(group => {
+        const nodesHtml = group.items.map(item => {
+          const node = item.node;
+          const index = configNodes.findIndex(n => n === node);
+          const truncatedUri = node.uri.length > 60 ? node.uri.substring(0, 60) + '...' : node.uri;
+          return `
+            <div class="config-node-card" data-index="${index}">
+              <div class="config-node-info">
+                <div class="config-node-name">${escapeHtml(node.name)}</div>
+                <div class="config-node-uri" title="${escapeHtml(node.uri)}">${escapeHtml(truncatedUri)}</div>
+                ${node.port ? `<div class="config-node-port">端口: ${node.port}</div>` : ''}
+                <div class="config-node-source">
+                  <span class="source-chip">${escapeHtml(group.sourceTypeLabel)}</span>
+                  <span>${escapeHtml(group.shortLabel)}</span>
+                </div>
+              </div>
+              <div class="config-node-actions">
+                <button class="btn btn-secondary btn-sm" data-action="edit" data-index="${index}">
+                  ✏️ 编辑
+                </button>
+                <button class="btn btn-danger btn-sm" data-action="delete" data-index="${index}">
+                  🗑️ 删除
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('');
+
         return `
-          <div class="config-node-card" data-index="${index}">
-            <div class="config-node-info">
-              <div class="config-node-name">${escapeHtml(node.name)}</div>
-              <div class="config-node-uri" title="${escapeHtml(node.uri)}">${escapeHtml(truncatedUri)}</div>
-              ${node.port ? `<div class="config-node-port">端口: ${node.port}</div>` : ''}
+          <section class="config-group">
+            <div class="config-group-header">
+              <div class="config-group-title">${escapeHtml(group.title)}</div>
+              <div class="config-group-count">${group.items.length} 个节点</div>
             </div>
-            <div class="config-node-actions">
-              <button class="btn btn-secondary btn-sm" data-action="edit" data-index="${index}">
-                ✏️ 编辑
-              </button>
-              <button class="btn btn-danger btn-sm" data-action="delete" data-index="${index}">
-                🗑️ 删除
-              </button>
+            <div class="config-nodes-grid">
+              ${nodesHtml}
             </div>
-          </div>
+          </section>
         `;
       }).join('');
 
@@ -2110,6 +2749,76 @@
           }
         });
       });
+    }
+
+    function buildNodeGroups(nodes) {
+      const map = new Map();
+      nodes.forEach((node, index) => {
+        const meta = sourceMeta(node);
+        const key = `${meta.type}:${meta.ref}`;
+        if (!map.has(key)) {
+          map.set(key, {
+            key,
+            title: meta.title,
+            shortLabel: meta.shortLabel,
+            sourceTypeLabel: meta.typeLabel,
+            sourceOrder: meta.order,
+            items: []
+          });
+        }
+        map.get(key).items.push({ node, index });
+      });
+
+      const groups = Array.from(map.values());
+      groups.sort((a, b) => {
+        if (a.sourceOrder !== b.sourceOrder) return a.sourceOrder - b.sourceOrder;
+        return a.title.localeCompare(b.title, 'zh-CN');
+      });
+      return groups;
+    }
+
+    function sourceMeta(node) {
+      const source = (node.source || '').toLowerCase();
+      const sourceRef = (node.source_ref || '').trim();
+
+      if (source === 'subscription') {
+        let host = '订阅来源';
+        if (sourceRef) {
+          try {
+            host = new URL(sourceRef).host || sourceRef;
+          } catch (e) {
+            host = sourceRef;
+          }
+        }
+        return {
+          type: 'subscription',
+          ref: sourceRef || host,
+          title: `订阅节点 · ${host}`,
+          shortLabel: host,
+          typeLabel: '订阅',
+          order: 1
+        };
+      }
+
+      if (source === 'nodes_file') {
+        return {
+          type: 'nodes_file',
+          ref: 'nodes_file',
+          title: '节点文件导入',
+          shortLabel: 'nodes.txt',
+          typeLabel: '文件',
+          order: 2
+        };
+      }
+
+      return {
+        type: 'inline',
+        ref: 'inline',
+        title: '手动节点',
+        shortLabel: 'WebUI/配置文件',
+        typeLabel: '手动',
+        order: 0
+      };
     }
 
     function escapeHtml(text) {
@@ -2198,7 +2907,7 @@
 
         hideNodeModal();
         showToast(data.message || (isEditMode ? '节点已更新' : '节点已添加'), 'success');
-        loadConfigNodes();
+        loadConfigNodes(true);
       } catch (err) {
         errorEl.textContent = '操作失败: ' + err.message;
         errorEl.classList.add('show');
@@ -2219,7 +2928,7 @@
           return;
         }
         showToast(data.message || '节点已删除', 'success');
-        loadConfigNodes();
+        loadConfigNodes(true);
       } catch (err) {
         showToast('删除失败: ' + err.message, 'error');
       }
@@ -2244,7 +2953,7 @@
         // 刷新监控数据
         setTimeout(() => {
           refresh();
-          loadConfigNodes();
+          loadConfigNodes(true);
         }, 2000);
       } catch (err) {
         showToast('重载失败: ' + err.message, 'error');

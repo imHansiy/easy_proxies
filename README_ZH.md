@@ -25,6 +25,7 @@
 - **WebUI 设置**: 无需编辑配置文件即可修改 external_ip 和 probe_target
 - **自动健康检查**: 启动时自动检测所有节点可用性，定期（5分钟）检查节点状态
 - **智能节点过滤**: 自动过滤不可用节点，WebUI 和导出按延迟排序
+- **域名级黑名单**: 按节点记录不可访问域名（如 CF 盾牌），支持查看黑名单列表与后台定时复查自动恢复
 - **端口保留**: 添加/更新节点时，已有节点保持原有端口不变
 
 ### 安全与性能（新增！）
@@ -38,6 +39,8 @@
 
 ### 部署
 - **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
+- **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点与运行时状态可持久化
+- **环境变量配置**: 支持 `EASY_PROXIES_DB_DRIVER`、`EASY_PROXIES_DB_DSN`、`DATABASE_URL` 等
 - **多架构支持**: Docker 镜像同时支持 AMD64 和 ARM64
 - **密码保护**: WebUI 支持密码认证，安全的会话管理
 
@@ -71,7 +74,11 @@ docker compose up -d
 **本地编译运行：**
 
 ```bash
-go build -tags "with_utls with_quic with_grpc" -o easy-proxies ./cmd/easy_proxies
+# 推荐：直接使用脚本（默认包含 with_quic 等完整标签）
+./run.sh --config config.yaml
+
+# 或手动构建后运行
+go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
 ./easy-proxies --config config.yaml
 ```
 
@@ -95,6 +102,12 @@ management:
   probe_target: www.apple.com:80  # 延迟探测目标
   password: ""                # WebUI 访问密码，为空则不需要密码（可选）
 
+# 数据库持久化（可选，Render 部署推荐 PostgreSQL）
+storage:
+  driver: "postgres" # 可选: postgres / mysql / sqlite
+  dsn: "postgres://user:password@host:5432/dbname?sslmode=require"
+  auto_migrate: true
+
 # 统一入口监听
 listener:
   address: 0.0.0.0
@@ -107,6 +120,10 @@ pool:
   mode: sequential            # sequential (顺序) 或 random (随机)
   failure_threshold: 3        # 失败阈值，超过后拉黑节点
   blacklist_duration: 24h     # 拉黑时长
+  domain_failure_threshold: 2   # 同一节点同一域名失败阈值
+  domain_blacklist_duration: 12h # 域名级黑名单时长
+  domain_recheck_interval: 10m   # 后台复查黑名单域名（成功自动移出）
+  domain_recheck_timeout: 10s    # 复查超时
 
 # 多端口模式
 multi_port:
@@ -135,6 +152,10 @@ pool:
   mode: sequential  # sequential (顺序) 或 random (随机)
   failure_threshold: 3
   blacklist_duration: 24h
+  domain_failure_threshold: 2
+  domain_blacklist_duration: 12h
+  domain_recheck_interval: 10m
+  domain_recheck_timeout: 10s
 ```
 
 **适用场景：** 自动故障转移、负载均衡
@@ -392,6 +413,7 @@ Multi-Port 模式下，端口从 `base_port` 自动分配。
 | POST | `/api/reload` | 重载配置 |
 | GET | `/api/settings` | 获取当前设置 |
 | PUT | `/api/settings` | 更新设置（external_ip, probe_target） |
+| GET | `/api/blacklist` | 获取节点域名黑名单列表 |
 
 **请求示例：**
 
@@ -469,10 +491,18 @@ subscription_refresh:
 **WebUI 和 API 支持：**
 
 - WebUI 显示订阅状态（节点数、上次刷新时间、错误信息）
+- WebUI 显示订阅状态（节点数、上次刷新时间、**下次自动刷新时间**、错误信息）
 - 支持手动触发刷新按钮
+- 订阅节点在首次加载/刷新后会自动探测可用性：失败会临时拉黑，后续探测成功会自动解除拉黑
 - API 端点：
   - `GET /api/subscription/status` - 获取订阅状态
   - `POST /api/subscription/refresh` - 手动触发刷新
+  - `GET /api/subscriptions` - 获取订阅列表
+  - `POST /api/subscriptions` - 添加订阅
+  - `PUT /api/subscriptions/:index` - 编辑订阅
+  - `DELETE /api/subscriptions/:index` - 删除订阅
+  - `POST /api/subscriptions/:index/refresh` - 仅刷新指定订阅
+  - `GET /api/subscriptions/:index/logs` - 查看指定订阅更新日志
 
 ## 端口说明
 
@@ -483,6 +513,14 @@ subscription_refresh:
 | 24000+ | 每节点独立端口（多端口/混合模式） |
 
 ## Docker 部署
+
+### Render + PostgreSQL（推荐）
+
+Render 运行环境可能会重建容器，建议启用 `storage.driver + storage.dsn`。启用后会持久化：
+
+- 配置节点（`/api/nodes/config`）
+- 管理设置（`external_ip`、`probe_target`、`skip_cert_verify`）
+- 运行时状态（失败计数、黑名单状态、探测可用性）
 
 **方式一：主机网络模式（推荐）**
 
@@ -536,6 +574,8 @@ go build -o easy-proxies ./cmd/easy_proxies
 # 完整功能构建
 go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
 ```
+
+> 如果要使用 `hysteria2://` / `hy2://`，必须使用带 `with_quic` 的构建（推荐直接用 `./run.sh`）。
 
 ## 更新日志
 

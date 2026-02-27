@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -26,15 +27,68 @@ type Config struct {
 	Pool                PoolConfig                `yaml:"pool"`
 	Management          ManagementConfig          `yaml:"management"`
 	SubscriptionRefresh SubscriptionRefreshConfig `yaml:"subscription_refresh"`
+	Storage             StorageConfig             `yaml:"storage"`
 	GeoIP               GeoIPConfig               `yaml:"geoip"`
 	Nodes               []NodeConfig              `yaml:"nodes"`
 	NodesFile           string                    `yaml:"nodes_file"`    // 节点文件路径，每行一个 URI
 	Subscriptions       []string                  `yaml:"subscriptions"` // 订阅链接列表
-	ExternalIP          string                    `yaml:"external_ip"`      // 外部 IP 地址，用于导出时替换 0.0.0.0
+	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                    `yaml:"log_level"`
 	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
 
 	filePath string `yaml:"-"` // 配置文件路径，用于保存
+}
+
+// StorageConfig controls optional external persistence backends.
+type StorageConfig struct {
+	Driver      string                `yaml:"driver"`
+	DSN         string                `yaml:"dsn"`
+	AutoMigrate *bool                 `yaml:"auto_migrate"`
+	Postgres    PostgresStorageConfig `yaml:"postgres"`
+	MySQL       SQLStorageConfig      `yaml:"mysql"`
+	SQLite      SQLStorageConfig      `yaml:"sqlite"`
+}
+
+// PostgresStorageConfig enables PostgreSQL-backed persistent state.
+type PostgresStorageConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	DSN     string `yaml:"dsn"`
+}
+
+// SQLStorageConfig provides DSN config for SQL backends.
+type SQLStorageConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	DSN     string `yaml:"dsn"`
+}
+
+// Enabled reports whether database persistence is enabled.
+func (s StorageConfig) Enabled() bool {
+	return s.Driver != "" || s.Postgres.Enabled || s.MySQL.Enabled || s.SQLite.Enabled
+}
+
+// ResolveDriverDSN resolves storage driver/dsn with backward compatibility.
+func (s StorageConfig) ResolveDriverDSN() (driver, dsn string) {
+	if strings.TrimSpace(s.Driver) != "" {
+		return strings.ToLower(strings.TrimSpace(s.Driver)), strings.TrimSpace(s.DSN)
+	}
+	if s.Postgres.Enabled {
+		return "postgres", strings.TrimSpace(s.Postgres.DSN)
+	}
+	if s.MySQL.Enabled {
+		return "mysql", strings.TrimSpace(s.MySQL.DSN)
+	}
+	if s.SQLite.Enabled {
+		return "sqlite", strings.TrimSpace(s.SQLite.DSN)
+	}
+	return "", ""
+}
+
+// ShouldAutoMigrate reports whether schema auto migration is enabled.
+func (s StorageConfig) ShouldAutoMigrate() bool {
+	if s.AutoMigrate == nil {
+		return true
+	}
+	return *s.AutoMigrate
 }
 
 // GeoIPConfig controls GeoIP-based region routing.
@@ -57,9 +111,13 @@ type ListenerConfig struct {
 
 // PoolConfig configures scheduling + failure handling.
 type PoolConfig struct {
-	Mode              string        `yaml:"mode"`
-	FailureThreshold  int           `yaml:"failure_threshold"`
-	BlacklistDuration time.Duration `yaml:"blacklist_duration"`
+	Mode                    string        `yaml:"mode"`
+	FailureThreshold        int           `yaml:"failure_threshold"`
+	BlacklistDuration       time.Duration `yaml:"blacklist_duration"`
+	DomainFailureThreshold  int           `yaml:"domain_failure_threshold"`
+	DomainBlacklistDuration time.Duration `yaml:"domain_blacklist_duration"`
+	DomainRecheckInterval   time.Duration `yaml:"domain_recheck_interval"`
+	DomainRecheckTimeout    time.Duration `yaml:"domain_recheck_timeout"`
 }
 
 // MultiPortConfig defines address/credential defaults for multi-port mode.
@@ -99,12 +157,13 @@ const (
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
 type NodeConfig struct {
-	Name     string     `yaml:"name" json:"name"`
-	URI      string     `yaml:"uri" json:"uri"`
-	Port     uint16     `yaml:"port,omitempty" json:"port,omitempty"`
-	Username string     `yaml:"username,omitempty" json:"username,omitempty"`
-	Password string     `yaml:"password,omitempty" json:"password,omitempty"`
-	Source   NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
+	Name      string     `yaml:"name" json:"name"`
+	URI       string     `yaml:"uri" json:"uri"`
+	Port      uint16     `yaml:"port,omitempty" json:"port,omitempty"`
+	Username  string     `yaml:"username,omitempty" json:"username,omitempty"`
+	Password  string     `yaml:"password,omitempty" json:"password,omitempty"`
+	Source    NodeSource `yaml:"-" json:"source,omitempty"`     // Runtime only, not persisted
+	SourceRef string     `yaml:"-" json:"source_ref,omitempty"` // Subscription URL or source identifier
 }
 
 // NodeKey returns a unique identifier for the node based on its URI.
@@ -164,6 +223,18 @@ func (c *Config) normalize() error {
 	}
 	if c.Pool.BlacklistDuration <= 0 {
 		c.Pool.BlacklistDuration = 24 * time.Hour
+	}
+	if c.Pool.DomainFailureThreshold <= 0 {
+		c.Pool.DomainFailureThreshold = 2
+	}
+	if c.Pool.DomainBlacklistDuration <= 0 {
+		c.Pool.DomainBlacklistDuration = 12 * time.Hour
+	}
+	if c.Pool.DomainRecheckInterval <= 0 {
+		c.Pool.DomainRecheckInterval = 10 * time.Minute
+	}
+	if c.Pool.DomainRecheckTimeout <= 0 {
+		c.Pool.DomainRecheckTimeout = 10 * time.Second
 	}
 	if c.MultiPort.Address == "" {
 		c.MultiPort.Address = "0.0.0.0"
@@ -226,12 +297,12 @@ func (c *Config) normalize() error {
 				log.Printf("⚠️ Failed to load subscription %q: %v (skipping)", subURL, err)
 				continue
 			}
+			for idx := range nodes {
+				nodes[idx].Source = NodeSourceSubscription
+				nodes[idx].SourceRef = subURL
+			}
 			log.Printf("✅ Loaded %d nodes from subscription", len(nodes))
 			subNodes = append(subNodes, nodes...)
-		}
-		// Mark subscription nodes and write to nodes.txt
-		for idx := range subNodes {
-			subNodes[idx].Source = NodeSourceSubscription
 		}
 		if len(subNodes) > 0 {
 			// Determine nodes.txt path
@@ -374,6 +445,18 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 	if c.Pool.BlacklistDuration <= 0 {
 		c.Pool.BlacklistDuration = 24 * time.Hour
+	}
+	if c.Pool.DomainFailureThreshold <= 0 {
+		c.Pool.DomainFailureThreshold = 2
+	}
+	if c.Pool.DomainBlacklistDuration <= 0 {
+		c.Pool.DomainBlacklistDuration = 12 * time.Hour
+	}
+	if c.Pool.DomainRecheckInterval <= 0 {
+		c.Pool.DomainRecheckInterval = 10 * time.Minute
+	}
+	if c.Pool.DomainRecheckTimeout <= 0 {
+		c.Pool.DomainRecheckTimeout = 10 * time.Second
 	}
 	if c.MultiPort.Address == "" {
 		c.MultiPort.Address = "0.0.0.0"
@@ -548,12 +631,8 @@ func loadNodesFromSubscription(subURL string, timeout time.Duration) ([]NodeConf
 func parseSubscriptionContent(content string) ([]NodeConfig, error) {
 	content = strings.TrimSpace(content)
 
-	// Quick check for YAML format (check first 200 chars for "proxies:")
-	sampleSize := 200
-	if len(content) < sampleSize {
-		sampleSize = len(content)
-	}
-	if strings.Contains(content[:sampleSize], "proxies:") {
+	// Detect Clash/Mihomo YAML (proxies section may appear deep in file)
+	if strings.Contains(content, "\nproxies:") || strings.HasPrefix(content, "proxies:") {
 		return parseClashYAML(content)
 	}
 
@@ -569,6 +648,9 @@ func parseSubscriptionContent(content string) ([]NodeConfig, error) {
 			}
 		}
 		content = string(decoded)
+		if strings.Contains(content, "\nproxies:") || strings.HasPrefix(content, "proxies:") {
+			return parseClashYAML(content)
+		}
 	}
 
 	// Parse as plain text (one URI per line)
@@ -646,27 +728,27 @@ type clashConfig struct {
 }
 
 type clashProxy struct {
-	Name           string                 `yaml:"name"`
-	Type           string                 `yaml:"type"`
-	Server         string                 `yaml:"server"`
-	Port           int                    `yaml:"port"`
-	UUID           string                 `yaml:"uuid"`
-	Password       string                 `yaml:"password"`
-	Cipher         string                 `yaml:"cipher"`
-	AlterId        int                    `yaml:"alterId"`
-	Network        string                 `yaml:"network"`
-	TLS            bool                   `yaml:"tls"`
-	SkipCertVerify bool                   `yaml:"skip-cert-verify"`
-	ServerName     string                 `yaml:"servername"`
-	SNI            string                 `yaml:"sni"`
-	Flow           string                 `yaml:"flow"`
-	UDP            bool                   `yaml:"udp"`
-	WSOpts         *clashWSOptions        `yaml:"ws-opts"`
-	GrpcOpts       *clashGrpcOptions      `yaml:"grpc-opts"`
-	RealityOpts    *clashRealityOptions   `yaml:"reality-opts"`
-	ClientFingerprint string              `yaml:"client-fingerprint"`
-	Plugin         string                 `yaml:"plugin"`
-	PluginOpts     map[string]interface{} `yaml:"plugin-opts"`
+	Name              string                 `yaml:"name"`
+	Type              string                 `yaml:"type"`
+	Server            string                 `yaml:"server"`
+	Port              int                    `yaml:"port"`
+	UUID              string                 `yaml:"uuid"`
+	Password          string                 `yaml:"password"`
+	Cipher            string                 `yaml:"cipher"`
+	AlterId           int                    `yaml:"alterId"`
+	Network           string                 `yaml:"network"`
+	TLS               bool                   `yaml:"tls"`
+	SkipCertVerify    bool                   `yaml:"skip-cert-verify"`
+	ServerName        string                 `yaml:"servername"`
+	SNI               string                 `yaml:"sni"`
+	Flow              string                 `yaml:"flow"`
+	UDP               bool                   `yaml:"udp"`
+	WSOpts            *clashWSOptions        `yaml:"ws-opts"`
+	GrpcOpts          *clashGrpcOptions      `yaml:"grpc-opts"`
+	RealityOpts       *clashRealityOptions   `yaml:"reality-opts"`
+	ClientFingerprint string                 `yaml:"client-fingerprint"`
+	Plugin            string                 `yaml:"plugin"`
+	PluginOpts        map[string]interface{} `yaml:"plugin-opts"`
 }
 
 type clashWSOptions struct {
@@ -1004,6 +1086,117 @@ func (c *Config) SaveSettings() error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+// SaveSubscriptions persists only the subscriptions list to config.yaml.
+func (c *Config) SaveSubscriptions() error {
+	if c == nil {
+		return errors.New("config is nil")
+	}
+	if c.filePath == "" {
+		return errors.New("config file path is unknown")
+	}
+
+	data, err := os.ReadFile(c.filePath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	var saveCfg Config
+	if err := yaml.Unmarshal(data, &saveCfg); err != nil {
+		return fmt.Errorf("decode config: %w", err)
+	}
+
+	saveCfg.Subscriptions = append([]string(nil), c.Subscriptions...)
+
+	newData, err := yaml.Marshal(&saveCfg)
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+
+	if err := writeFileWithLock(c.filePath, newData, 0o644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	return nil
+}
+
+// ApplyEnvOverrides overrides storage settings from environment variables.
+// Priority (high -> low):
+// 1) EASY_PROXIES_DB_*
+// 2) EASY_PROXIES_PG_DSN
+// 3) DATABASE_URL
+func (c *Config) ApplyEnvOverrides() error {
+	if c == nil {
+		return nil
+	}
+
+	if v, ok := os.LookupEnv("EASY_PROXIES_DB_DRIVER"); ok {
+		v = strings.ToLower(strings.TrimSpace(v))
+		if v != "" {
+			c.Storage.Driver = v
+		}
+	}
+
+	if v, ok := os.LookupEnv("EASY_PROXIES_DB_DSN"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Storage.DSN = v
+		}
+	}
+
+	if v, ok := os.LookupEnv("EASY_PROXIES_DB_AUTO_MIGRATE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			parsed, err := strconv.ParseBool(v)
+			if err != nil {
+				return fmt.Errorf("invalid EASY_PROXIES_DB_AUTO_MIGRATE: %w", err)
+			}
+			c.Storage.AutoMigrate = &parsed
+		}
+	}
+
+	if c.Storage.DSN == "" {
+		if v, ok := os.LookupEnv("EASY_PROXIES_PG_DSN"); ok {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				c.Storage.DSN = v
+				if c.Storage.Driver == "" {
+					c.Storage.Driver = "postgres"
+				}
+			}
+		}
+	}
+
+	if c.Storage.DSN == "" {
+		if v, ok := os.LookupEnv("DATABASE_URL"); ok {
+			v = strings.TrimSpace(v)
+			if v != "" {
+				c.Storage.DSN = v
+				if c.Storage.Driver == "" {
+					c.Storage.Driver = inferDriverFromDSN(v)
+				}
+			}
+		}
+	}
+
+	if c.Storage.Driver == "" && c.Storage.DSN != "" {
+		c.Storage.Driver = inferDriverFromDSN(c.Storage.DSN)
+	}
+
+	return nil
+}
+
+func inferDriverFromDSN(dsn string) string {
+	v := strings.ToLower(strings.TrimSpace(dsn))
+	if strings.HasPrefix(v, "postgres://") || strings.HasPrefix(v, "postgresql://") {
+		return "postgres"
+	}
+	if strings.HasPrefix(v, "file:") || strings.HasSuffix(v, ".db") || strings.HasSuffix(v, ".sqlite") || strings.HasSuffix(v, ".sqlite3") {
+		return "sqlite"
+	}
+	if strings.Contains(v, "@tcp(") || strings.Contains(v, "charset=") {
+		return "mysql"
+	}
+	return "postgres"
 }
 
 // isPortAvailable checks if a port is available for binding.

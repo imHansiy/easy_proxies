@@ -16,6 +16,7 @@ import (
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/outbound/pool"
+	"easy_proxies/internal/storage"
 
 	"github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/include"
@@ -47,6 +48,11 @@ func WithLogger(l Logger) Option {
 	return func(m *Manager) { m.logger = l }
 }
 
+// WithStore enables persistent storage backend.
+func WithStore(store storage.Store) Option {
+	return func(m *Manager) { m.store = store }
+}
+
 // Manager owns the lifecycle of the active sing-box instance.
 type Manager struct {
 	mu sync.RWMutex
@@ -63,6 +69,7 @@ type Manager struct {
 
 	baseCtx            context.Context
 	healthCheckStarted bool
+	store              storage.Store
 }
 
 // New creates a BoxManager with the given config.
@@ -276,6 +283,9 @@ func (m *Manager) Close() error {
 		m.monitorMgr = nil
 		m.healthCheckStarted = false
 	}
+	if m.store != nil {
+		pool.SetSharedStateStore(nil)
+	}
 	m.baseCtx = nil
 	return err
 }
@@ -416,6 +426,10 @@ func (m *Manager) ensureMonitor(ctx context.Context) error {
 		return fmt.Errorf("init monitor manager: %w", err)
 	}
 	monitorMgr.SetLogger(monitorLoggerAdapter{logger: m.logger})
+	if m.store != nil {
+		monitorMgr.SetRuntimeStateStore(monitorRuntimeStoreAdapter{store: m.store})
+		pool.SetSharedStateStore(poolSharedStateStoreAdapter{store: m.store})
+	}
 	m.monitorMgr = monitorMgr
 
 	var serverToStart *monitor.Server
@@ -530,9 +544,9 @@ func (m *Manager) CreateNode(ctx context.Context, node config.NodeConfig) (confi
 	}
 
 	m.cfg.Nodes = append(m.cfg.Nodes, normalized)
-	if err := m.cfg.Save(); err != nil {
+	if err := m.persistNodesLocked(ctx); err != nil {
 		m.cfg.Nodes = m.cfg.Nodes[:len(m.cfg.Nodes)-1]
-		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
+		return config.NodeConfig{}, fmt.Errorf("save nodes: %w", err)
 	}
 	return normalized, nil
 }
@@ -565,12 +579,13 @@ func (m *Manager) UpdateNode(ctx context.Context, name string, node config.NodeC
 
 	// Preserve the original source
 	normalized.Source = m.cfg.Nodes[idx].Source
+	normalized.SourceRef = m.cfg.Nodes[idx].SourceRef
 
 	prev := m.cfg.Nodes[idx]
 	m.cfg.Nodes[idx] = normalized
-	if err := m.cfg.Save(); err != nil {
+	if err := m.persistNodesLocked(ctx); err != nil {
 		m.cfg.Nodes[idx] = prev
-		return config.NodeConfig{}, fmt.Errorf("save config: %w", err)
+		return config.NodeConfig{}, fmt.Errorf("save nodes: %w", err)
 	}
 	return normalized, nil
 }
@@ -598,9 +613,19 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 
 	backup := cloneNodes(m.cfg.Nodes)
 	m.cfg.Nodes = append(m.cfg.Nodes[:idx], m.cfg.Nodes[idx+1:]...)
-	if err := m.cfg.Save(); err != nil {
+	if err := m.persistNodesLocked(ctx); err != nil {
 		m.cfg.Nodes = backup
-		return fmt.Errorf("save config: %w", err)
+		return fmt.Errorf("save nodes: %w", err)
+	}
+	if m.store != nil {
+		oldTags := buildNodeTags(backup)
+		newTags := buildNodeTags(m.cfg.Nodes)
+		for _, tag := range oldTags {
+			if !containsString(newTags, tag) {
+				_ = m.store.DeleteNodeRuntimeState(ctx, tag)
+				_ = m.store.DeleteSharedRuntimeState(ctx, tag)
+			}
+		}
 	}
 	return nil
 }
@@ -648,6 +673,36 @@ func (m *Manager) CurrentPortMap() map[string]uint16 {
 		return nil
 	}
 	return m.cfg.BuildPortMap()
+}
+
+// SaveSettings persists runtime settings to the configured backend.
+func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget string, skipCertVerify bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.cfg == nil {
+		return errConfigUnavailable
+	}
+
+	m.cfg.ExternalIP = externalIP
+	m.cfg.Management.ProbeTarget = probeTarget
+	m.cfg.SkipCertVerify = skipCertVerify
+
+	if m.store != nil {
+		return m.store.SaveSettings(ctx, storage.Settings{
+			ExternalIP:     externalIP,
+			ProbeTarget:    probeTarget,
+			SkipCertVerify: skipCertVerify,
+		})
+	}
+	return m.cfg.SaveSettings()
+}
+
+func (m *Manager) persistNodesLocked(ctx context.Context) error {
+	if m.store != nil {
+		return m.store.SaveNodes(ctx, m.cfg.Nodes)
+	}
+	return m.cfg.Save()
 }
 
 // --- Helper functions ---
@@ -831,4 +886,130 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 	}
 
 	return node, nil
+}
+
+func buildNodeTags(nodes []config.NodeConfig) []string {
+	used := make(map[string]int)
+	tags := make([]string, 0, len(nodes))
+	for idx, node := range nodes {
+		baseTag := sanitizeTagForState(node.Name)
+		if baseTag == "" {
+			baseTag = fmt.Sprintf("node-%d", idx+1)
+		}
+		tag := baseTag
+		if count, ok := used[baseTag]; ok {
+			used[baseTag] = count + 1
+			tag = fmt.Sprintf("%s-%d", baseTag, count+1)
+		} else {
+			used[baseTag] = 1
+		}
+		tags = append(tags, tag)
+	}
+	return tags
+}
+
+func sanitizeTagForState(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if lower == "" {
+		return ""
+	}
+	segments := strings.FieldsFunc(lower, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+	result := strings.Join(segments, "-")
+	return strings.Trim(result, "-")
+}
+
+func containsString(items []string, value string) bool {
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
+type monitorRuntimeStoreAdapter struct {
+	store storage.Store
+}
+
+func (a monitorRuntimeStoreAdapter) LoadNodeRuntimeState(ctx context.Context, tag string) (monitor.NodeRuntimeState, bool, error) {
+	if a.store == nil {
+		return monitor.NodeRuntimeState{}, false, nil
+	}
+	state, ok, err := a.store.LoadNodeRuntimeState(ctx, tag)
+	if err != nil || !ok {
+		return monitor.NodeRuntimeState{}, ok, err
+	}
+	return monitor.NodeRuntimeState{
+		Tag:              state.Tag,
+		FailureCount:     state.FailureCount,
+		SuccessCount:     state.SuccessCount,
+		Blacklisted:      state.Blacklisted,
+		BlacklistedUntil: state.BlacklistedUntil,
+		LastError:        state.LastError,
+		LastFailure:      state.LastFailure,
+		LastSuccess:      state.LastSuccess,
+		LastProbeLatency: state.LastProbeLatency,
+		Available:        state.Available,
+		InitialCheckDone: state.InitialCheckDone,
+	}, true, nil
+}
+
+func (a monitorRuntimeStoreAdapter) SaveNodeRuntimeState(ctx context.Context, state monitor.NodeRuntimeState) error {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.SaveNodeRuntimeState(ctx, storage.NodeRuntimeState{
+		Tag:              state.Tag,
+		FailureCount:     state.FailureCount,
+		SuccessCount:     state.SuccessCount,
+		Blacklisted:      state.Blacklisted,
+		BlacklistedUntil: state.BlacklistedUntil,
+		LastError:        state.LastError,
+		LastFailure:      state.LastFailure,
+		LastSuccess:      state.LastSuccess,
+		LastProbeLatency: state.LastProbeLatency,
+		Available:        state.Available,
+		InitialCheckDone: state.InitialCheckDone,
+	})
+}
+
+type poolSharedStateStoreAdapter struct {
+	store storage.Store
+}
+
+func (a poolSharedStateStoreAdapter) LoadSharedRuntimeState(tag string) (pool.SharedRuntimeState, bool, error) {
+	if a.store == nil {
+		return pool.SharedRuntimeState{}, false, nil
+	}
+	state, ok, err := a.store.LoadSharedRuntimeState(context.Background(), tag)
+	if err != nil || !ok {
+		return pool.SharedRuntimeState{}, ok, err
+	}
+	return pool.SharedRuntimeState{
+		Tag:              state.Tag,
+		Failures:         state.Failures,
+		Blacklisted:      state.Blacklisted,
+		BlacklistedUntil: state.BlacklistedUntil,
+	}, true, nil
+}
+
+func (a poolSharedStateStoreAdapter) SaveSharedRuntimeState(state pool.SharedRuntimeState) error {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.SaveSharedRuntimeState(context.Background(), storage.SharedRuntimeState{
+		Tag:              state.Tag,
+		Failures:         state.Failures,
+		Blacklisted:      state.Blacklisted,
+		BlacklistedUntil: state.BlacklistedUntil,
+	})
+}
+
+func (a poolSharedStateStoreAdapter) DeleteSharedRuntimeState(tag string) error {
+	if a.store == nil {
+		return nil
+	}
+	return a.store.DeleteSharedRuntimeState(context.Background(), tag)
 }

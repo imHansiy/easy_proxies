@@ -48,6 +48,12 @@ type TimelineEvent struct {
 	Error     string    `json:"error,omitempty"`
 }
 
+// DomainBlock represents a domain-level blacklist entry for one node.
+type DomainBlock struct {
+	Domain           string    `json:"domain"`
+	BlacklistedUntil time.Time `json:"blacklisted_until"`
+}
+
 const maxTimelineSize = 20
 
 // Snapshot is a runtime view of a proxy node.
@@ -66,6 +72,28 @@ type Snapshot struct {
 	Available         bool            `json:"available"`
 	InitialCheckDone  bool            `json:"initial_check_done"`
 	Timeline          []TimelineEvent `json:"timeline,omitempty"`
+	DomainBlacklist   []DomainBlock   `json:"domain_blacklist,omitempty"`
+}
+
+// RuntimeStateStore persists per-node runtime state.
+type RuntimeStateStore interface {
+	LoadNodeRuntimeState(ctx context.Context, tag string) (NodeRuntimeState, bool, error)
+	SaveNodeRuntimeState(ctx context.Context, state NodeRuntimeState) error
+}
+
+// NodeRuntimeState is the persistence representation for node runtime state.
+type NodeRuntimeState struct {
+	Tag              string
+	FailureCount     int
+	SuccessCount     int64
+	Blacklisted      bool
+	BlacklistedUntil time.Time
+	LastError        string
+	LastFailure      time.Time
+	LastSuccess      time.Time
+	LastProbeLatency time.Duration
+	Available        bool
+	InitialCheckDone bool
 }
 
 type probeFunc func(ctx context.Context) (time.Duration, error)
@@ -76,6 +104,7 @@ type EntryHandle struct {
 }
 
 type entry struct {
+	owner            *Manager
 	info             NodeInfo
 	failure          int
 	success          int64
@@ -91,6 +120,7 @@ type entry struct {
 	release          releaseFunc
 	initialCheckDone bool
 	available        bool
+	domainBlacklist  map[string]time.Time
 	mu               sync.RWMutex
 }
 
@@ -104,6 +134,10 @@ type Manager struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	logger     Logger
+
+	runtimeStore RuntimeStateStore
+	persistQueue chan string
+	persistDone  chan struct{}
 }
 
 // Logger interface for logging
@@ -250,6 +284,7 @@ func (m *Manager) probeAllNodes(timeout time.Duration) {
 				entry.initialCheckDone = true
 			}
 			entry.mu.Unlock()
+			m.enqueuePersist(tag)
 
 			if err != nil && m.logger != nil {
 				m.logger.Warn("probe failed for ", tag, ": ", err)
@@ -268,6 +303,24 @@ func (m *Manager) Stop() {
 	if m.cancel != nil {
 		m.cancel()
 	}
+	if m.persistDone != nil {
+		<-m.persistDone
+	}
+}
+
+// SetRuntimeStateStore enables runtime state persistence.
+func (m *Manager) SetRuntimeStateStore(store RuntimeStateStore) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.runtimeStore = store
+	if store != nil && m.persistQueue == nil {
+		m.persistQueue = make(chan string, 1024)
+		m.persistDone = make(chan struct{})
+		go m.runPersistLoop()
+	}
+	m.mu.Unlock()
 }
 
 func parsePort(value string) uint16 {
@@ -285,14 +338,101 @@ func (m *Manager) Register(info NodeInfo) *EntryHandle {
 	e, ok := m.nodes[info.Tag]
 	if !ok {
 		e = &entry{
-			info:     info,
-			timeline: make([]TimelineEvent, 0, maxTimelineSize),
+			owner:           m,
+			info:            info,
+			timeline:        make([]TimelineEvent, 0, maxTimelineSize),
+			domainBlacklist: make(map[string]time.Time),
 		}
+		m.restoreRuntimeStateLocked(e)
 		m.nodes[info.Tag] = e
 	} else {
 		e.info = info
 	}
 	return &EntryHandle{ref: e}
+}
+
+func (m *Manager) restoreRuntimeStateLocked(e *entry) {
+	if m.runtimeStore == nil || e == nil {
+		return
+	}
+	state, ok, err := m.runtimeStore.LoadNodeRuntimeState(m.ctx, e.info.Tag)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("load runtime state failed for ", e.info.Tag, ": ", err)
+		}
+		return
+	}
+	if !ok {
+		return
+	}
+	e.failure = state.FailureCount
+	e.success = state.SuccessCount
+	e.blacklist = state.Blacklisted
+	e.until = state.BlacklistedUntil
+	e.lastError = state.LastError
+	e.lastFail = state.LastFailure
+	e.lastOK = state.LastSuccess
+	e.lastProbe = state.LastProbeLatency
+	e.available = state.Available
+	e.initialCheckDone = state.InitialCheckDone
+}
+
+func (m *Manager) runPersistLoop() {
+	defer close(m.persistDone)
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case tag := <-m.persistQueue:
+			m.persistTag(tag)
+		}
+	}
+}
+
+func (m *Manager) enqueuePersist(tag string) {
+	if m == nil || tag == "" {
+		return
+	}
+	m.mu.RLock()
+	queue := m.persistQueue
+	m.mu.RUnlock()
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- tag:
+	default:
+	}
+}
+
+func (m *Manager) persistTag(tag string) {
+	m.mu.RLock()
+	e, ok := m.nodes[tag]
+	store := m.runtimeStore
+	m.mu.RUnlock()
+	if !ok || e == nil || store == nil {
+		return
+	}
+
+	e.mu.RLock()
+	state := NodeRuntimeState{
+		Tag:              e.info.Tag,
+		FailureCount:     e.failure,
+		SuccessCount:     e.success,
+		Blacklisted:      e.blacklist,
+		BlacklistedUntil: e.until,
+		LastError:        e.lastError,
+		LastFailure:      e.lastFail,
+		LastSuccess:      e.lastOK,
+		LastProbeLatency: e.lastProbe,
+		Available:        e.available,
+		InitialCheckDone: e.initialCheckDone,
+	}
+	e.mu.RUnlock()
+
+	if err := store.SaveNodeRuntimeState(m.ctx, state); err != nil && m.logger != nil {
+		m.logger.Warn("save runtime state failed for ", tag, ": ", err)
+	}
 }
 
 // DestinationForProbe exposes the configured destination for health checks.
@@ -410,6 +550,18 @@ func (e *entry) snapshot() Snapshot {
 		copy(timelineCopy, e.timeline)
 	}
 
+	var domainBlocks []DomainBlock
+	if len(e.domainBlacklist) > 0 {
+		now := time.Now()
+		domainBlocks = make([]DomainBlock, 0, len(e.domainBlacklist))
+		for domain, until := range e.domainBlacklist {
+			if !until.IsZero() && now.After(until) {
+				continue
+			}
+			domainBlocks = append(domainBlocks, DomainBlock{Domain: domain, BlacklistedUntil: until})
+		}
+	}
+
 	return Snapshot{
 		NodeInfo:          e.info,
 		FailureCount:      e.failure,
@@ -425,6 +577,7 @@ func (e *entry) snapshot() Snapshot {
 		Available:         e.available,
 		InitialCheckDone:  e.initialCheckDone,
 		Timeline:          timelineCopy,
+		DomainBlacklist:   domainBlocks,
 	}
 }
 
@@ -436,6 +589,9 @@ func (e *entry) recordFailure(err error) {
 	e.lastError = errStr
 	e.lastFail = time.Now()
 	e.appendTimelineLocked(false, 0, errStr)
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
 }
 
 func (e *entry) recordSuccess() {
@@ -444,6 +600,9 @@ func (e *entry) recordSuccess() {
 	e.success++
 	e.lastOK = time.Now()
 	e.appendTimelineLocked(true, 0, "")
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
 }
 
 func (e *entry) recordSuccessWithLatency(latency time.Duration) {
@@ -457,6 +616,9 @@ func (e *entry) recordSuccessWithLatency(latency time.Duration) {
 		latencyMs = 1
 	}
 	e.appendTimelineLocked(true, latencyMs, "")
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
 }
 
 func (e *entry) appendTimelineLocked(success bool, latencyMs int64, errStr string) {
@@ -479,6 +641,9 @@ func (e *entry) blacklistUntil(until time.Time) {
 	e.blacklist = true
 	e.until = until
 	e.mu.Unlock()
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
 }
 
 func (e *entry) clearBlacklist() {
@@ -486,6 +651,9 @@ func (e *entry) clearBlacklist() {
 	e.blacklist = false
 	e.until = time.Time{}
 	e.mu.Unlock()
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
 }
 
 func (e *entry) incActive() {
@@ -512,6 +680,30 @@ func (e *entry) recordProbeLatency(d time.Duration) {
 	e.mu.Lock()
 	e.lastProbe = d
 	e.mu.Unlock()
+	if e.owner != nil {
+		e.owner.enqueuePersist(e.info.Tag)
+	}
+}
+
+func (e *entry) setDomainBlacklist(blocks []DomainBlock) {
+	e.mu.Lock()
+	if e.domainBlacklist == nil {
+		e.domainBlacklist = make(map[string]time.Time)
+	}
+	for k := range e.domainBlacklist {
+		delete(e.domainBlacklist, k)
+	}
+	for _, item := range blocks {
+		if item.Domain == "" || item.BlacklistedUntil.IsZero() {
+			continue
+		}
+		e.domainBlacklist[item.Domain] = item.BlacklistedUntil
+	}
+	tag := e.info.Tag
+	e.mu.Unlock()
+	if e.owner != nil {
+		e.owner.enqueuePersist(tag)
+	}
 }
 
 // RecordFailure updates failure counters.
@@ -595,6 +787,9 @@ func (h *EntryHandle) MarkInitialCheckDone(available bool) {
 	h.ref.initialCheckDone = true
 	h.ref.available = available
 	h.ref.mu.Unlock()
+	if h.ref.owner != nil {
+		h.ref.owner.enqueuePersist(h.ref.info.Tag)
+	}
 }
 
 // MarkAvailable updates the availability status.
@@ -605,4 +800,15 @@ func (h *EntryHandle) MarkAvailable(available bool) {
 	h.ref.mu.Lock()
 	h.ref.available = available
 	h.ref.mu.Unlock()
+	if h.ref.owner != nil {
+		h.ref.owner.enqueuePersist(h.ref.info.Tag)
+	}
+}
+
+// SetDomainBlacklist replaces node domain blacklist entries.
+func (h *EntryHandle) SetDomainBlacklist(blocks []DomainBlock) {
+	if h == nil || h.ref == nil {
+		return
+	}
+	h.ref.setDomainBlacklist(blocks)
 }

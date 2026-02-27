@@ -36,11 +36,15 @@ const (
 
 // Options controls pool outbound behaviour.
 type Options struct {
-	Mode              string
-	Members           []string
-	FailureThreshold  int
-	BlacklistDuration time.Duration
-	Metadata          map[string]MemberMeta
+	Mode                    string
+	Members                 []string
+	FailureThreshold        int
+	BlacklistDuration       time.Duration
+	DomainFailureThreshold  int
+	DomainBlacklistDuration time.Duration
+	DomainRecheckInterval   time.Duration
+	DomainRecheckTimeout    time.Duration
+	Metadata                map[string]MemberMeta
 }
 
 // MemberMeta carries optional descriptive information for monitoring UI.
@@ -68,6 +72,7 @@ type memberState struct {
 
 type poolOutbound struct {
 	outbound.Adapter
+	tag            string
 	ctx            context.Context
 	logger         log.ContextLogger
 	manager        adapter.OutboundManager
@@ -95,6 +100,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger log.ContextLogger, ta
 	memberCount := len(normalized.Members)
 	p := &poolOutbound{
 		Adapter: outbound.NewAdapter(Type, tag, []string{N.NetworkTCP, N.NetworkUDP}, normalized.Members),
+		tag:     tag,
 		ctx:     ctx,
 		logger:  logger,
 		manager: manager,
@@ -155,6 +161,18 @@ func normalizeOptions(options Options) Options {
 	if options.BlacklistDuration <= 0 {
 		options.BlacklistDuration = 24 * time.Hour
 	}
+	if options.DomainFailureThreshold <= 0 {
+		options.DomainFailureThreshold = 2
+	}
+	if options.DomainBlacklistDuration <= 0 {
+		options.DomainBlacklistDuration = 12 * time.Hour
+	}
+	if options.DomainRecheckInterval <= 0 {
+		options.DomainRecheckInterval = 10 * time.Minute
+	}
+	if options.DomainRecheckTimeout <= 0 {
+		options.DomainRecheckTimeout = 10 * time.Second
+	}
 	if options.Metadata == nil {
 		options.Metadata = make(map[string]MemberMeta)
 	}
@@ -183,6 +201,79 @@ func (p *poolOutbound) Start(stage adapter.StartStage) error {
 	if p.monitor != nil {
 		go p.probeAllMembersOnStartup()
 	}
+	if p.tag == Tag {
+		go p.runDomainRecheckLoop()
+	}
+	return nil
+}
+
+func (p *poolOutbound) runDomainRecheckLoop() {
+	interval := p.options.DomainRecheckInterval
+	if interval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.ctx.Done():
+			return
+		case <-ticker.C:
+			p.recheckDomainBlacklists()
+		}
+	}
+}
+
+func (p *poolOutbound) recheckDomainBlacklists() {
+	now := time.Now()
+	p.mu.Lock()
+	members := make([]*memberState, len(p.members))
+	copy(members, p.members)
+	p.mu.Unlock()
+
+	for _, member := range members {
+		if member == nil || member.shared == nil {
+			continue
+		}
+		domains := member.shared.domainsForRecheck(now)
+		for _, domain := range domains {
+			ctx, cancel := context.WithTimeout(p.ctx, p.options.DomainRecheckTimeout)
+			err := p.recheckDomain(ctx, member, domain)
+			cancel()
+			if err != nil {
+				continue
+			}
+			if member.shared.clearDomainBlacklist(domain) {
+				p.logger.Info("proxy ", member.tag, " domain blacklist cleared: ", domain)
+			}
+		}
+	}
+}
+
+func (p *poolOutbound) recheckDomain(ctx context.Context, member *memberState, domain string) error {
+	if domain == "" {
+		return E.New("empty domain")
+	}
+
+	destination80 := M.ParseSocksaddrHostPort(domain, 80)
+	conn, err := member.outbound.DialContext(ctx, N.NetworkTCP, destination80)
+	if err == nil {
+		defer conn.Close()
+		if _, probeErr := httpProbe(conn, domain); probeErr == nil {
+			return nil
+		}
+	}
+
+	destination443 := M.ParseSocksaddrHostPort(domain, 443)
+	conn443, err443 := member.outbound.DialContext(ctx, N.NetworkTCP, destination443)
+	if err443 != nil {
+		if err != nil {
+			return err443
+		}
+		return err443
+	}
+	_ = conn443.Close()
 	return nil
 }
 
@@ -276,8 +367,8 @@ func (p *poolOutbound) probeAllMembersOnStartup() {
 		if err != nil {
 			p.logger.Warn("initial probe failed for ", member.tag, ": ", err)
 			failedCount++
+			p.markProbeFailure(member, err)
 			if member.entry != nil {
-				member.entry.RecordFailure(err)
 				member.entry.MarkInitialCheckDone(false) // 标记为不可用
 			}
 			cancel()
@@ -291,8 +382,8 @@ func (p *poolOutbound) probeAllMembersOnStartup() {
 		if err != nil {
 			p.logger.Warn("initial HTTP probe failed for ", member.tag, ": ", err)
 			failedCount++
+			p.markProbeFailure(member, err)
 			if member.entry != nil {
-				member.entry.RecordFailure(err)
 				member.entry.MarkInitialCheckDone(false)
 			}
 			cancel()
@@ -304,8 +395,8 @@ func (p *poolOutbound) probeAllMembersOnStartup() {
 		latencyMs := latency.Milliseconds()
 		p.logger.Info("initial probe success for ", member.tag, ", latency: ", latencyMs, "ms")
 		availableCount++
+		p.markProbeSuccess(member, latency)
 		if member.entry != nil {
-			member.entry.RecordSuccessWithLatency(latency)
 			member.entry.MarkInitialCheckDone(true)
 		}
 
@@ -316,7 +407,8 @@ func (p *poolOutbound) probeAllMembersOnStartup() {
 }
 
 func (p *poolOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
-	member, err := p.pickMember(network)
+	domain := normalizeDomain(destination.AddrString())
+	member, err := p.pickMember(network, domain)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +416,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 	conn, err := member.outbound.DialContext(ctx, network, destination)
 	if err != nil {
 		p.decActive(member)
-		p.recordFailure(member, err)
+		p.recordFailure(member, err, domain)
 		return nil, err
 	}
 	p.recordSuccess(member)
@@ -332,7 +424,8 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 }
 
 func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
-	member, err := p.pickMember(N.NetworkUDP)
+	domain := normalizeDomain(destination.AddrString())
+	member, err := p.pickMember(N.NetworkUDP, domain)
 	if err != nil {
 		return nil, err
 	}
@@ -340,14 +433,14 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 	conn, err := member.outbound.ListenPacket(ctx, destination)
 	if err != nil {
 		p.decActive(member)
-		p.recordFailure(member, err)
+		p.recordFailure(member, err, domain)
 		return nil, err
 	}
 	p.recordSuccess(member)
 	return p.wrapPacketConn(conn, member), nil
 }
 
-func (p *poolOutbound) pickMember(network string) (*memberState, error) {
+func (p *poolOutbound) pickMember(network, domain string) (*memberState, error) {
 	now := time.Now()
 	candidates := p.getCandidateBuffer()
 
@@ -359,13 +452,13 @@ func (p *poolOutbound) pickMember(network string) (*memberState, error) {
 			return nil, err
 		}
 	}
-	candidates = p.availableMembersLocked(now, network, candidates)
+	candidates = p.availableMembersLocked(now, network, domain, candidates)
 	p.mu.Unlock()
 
 	if len(candidates) == 0 {
 		p.mu.Lock()
 		if p.releaseIfAllBlacklistedLocked(now) {
-			candidates = p.availableMembersLocked(now, network, candidates)
+			candidates = p.availableMembersLocked(now, network, domain, candidates)
 		}
 		p.mu.Unlock()
 	}
@@ -380,11 +473,14 @@ func (p *poolOutbound) pickMember(network string) (*memberState, error) {
 	return member, nil
 }
 
-func (p *poolOutbound) availableMembersLocked(now time.Time, network string, buf []*memberState) []*memberState {
+func (p *poolOutbound) availableMembersLocked(now time.Time, network, domain string, buf []*memberState) []*memberState {
 	result := buf[:0]
 	for _, member := range p.members {
 		// Check blacklist via shared state (auto-clears if expired)
 		if member.shared != nil && member.shared.isBlacklisted(now) {
+			continue
+		}
+		if domain != "" && member.shared != nil && member.shared.isDomainBlacklisted(domain, now) {
 			continue
 		}
 		if network != "" && !common.Contains(member.outbound.Network(), network) {
@@ -442,12 +538,20 @@ func (p *poolOutbound) selectMember(candidates []*memberState) *memberState {
 	}
 }
 
-func (p *poolOutbound) recordFailure(member *memberState, cause error) {
+func (p *poolOutbound) recordFailure(member *memberState, cause error, domain string) {
 	if member.shared == nil {
 		p.logger.Warn("proxy ", member.tag, " failure (no shared state): ", cause)
 		return
 	}
 	failures, blacklisted, _ := member.shared.recordFailure(cause, p.options.FailureThreshold, p.options.BlacklistDuration)
+	if domain != "" {
+		domainFailures, domainBlacklisted, domainUntil := member.shared.recordDomainFailure(domain, p.options.DomainFailureThreshold, p.options.DomainBlacklistDuration)
+		if domainBlacklisted {
+			p.logger.Warn("proxy ", member.tag, " domain blacklisted ", domain, " until ", domainUntil)
+		} else {
+			p.logger.Warn("proxy ", member.tag, " domain failure ", domain, " ", domainFailures, "/", p.options.DomainFailureThreshold)
+		}
+	}
 	if blacklisted {
 		p.logger.Warn("proxy ", member.tag, " blacklisted for ", p.options.BlacklistDuration, ": ", cause)
 	} else {
@@ -525,9 +629,7 @@ func (p *poolOutbound) makeProbeFunc(member *memberState) func(ctx context.Conte
 		start := time.Now()
 		conn, err := member.outbound.DialContext(ctx, N.NetworkTCP, destination)
 		if err != nil {
-			if member.entry != nil {
-				member.entry.RecordFailure(err)
-			}
+			p.markProbeFailure(member, err)
 			return 0, err
 		}
 		defer conn.Close()
@@ -535,17 +637,13 @@ func (p *poolOutbound) makeProbeFunc(member *memberState) func(ctx context.Conte
 		// Perform HTTP probe to measure actual latency (TTFB)
 		_, err = httpProbe(conn, destination.AddrString())
 		if err != nil {
-			if member.entry != nil {
-				member.entry.RecordFailure(err)
-			}
+			p.markProbeFailure(member, err)
 			return 0, err
 		}
 
 		// Total duration = dial time + HTTP probe
 		duration := time.Since(start)
-		if member.entry != nil {
-			member.entry.RecordSuccessWithLatency(duration)
-		}
+		p.markProbeSuccess(member, duration)
 		return duration, nil
 	}
 }
@@ -586,9 +684,7 @@ func (p *poolOutbound) makeProbeByTagFunc(tag string) func(ctx context.Context) 
 		start := time.Now()
 		conn, err := member.outbound.DialContext(ctx, N.NetworkTCP, destination)
 		if err != nil {
-			if member.entry != nil {
-				member.entry.RecordFailure(err)
-			}
+			p.markProbeFailure(member, err)
 			return 0, err
 		}
 		defer conn.Close()
@@ -596,19 +692,56 @@ func (p *poolOutbound) makeProbeByTagFunc(tag string) func(ctx context.Context) 
 		// Perform HTTP probe to measure actual latency (TTFB)
 		_, err = httpProbe(conn, destination.AddrString())
 		if err != nil {
-			if member.entry != nil {
-				member.entry.RecordFailure(err)
-			}
+			p.markProbeFailure(member, err)
 			return 0, err
 		}
 
 		// Total duration = dial time + TTFB
 		duration := time.Since(start)
-		if member.entry != nil {
-			member.entry.RecordSuccessWithLatency(duration)
-		}
+		p.markProbeSuccess(member, duration)
 		return duration, nil
 	}
+}
+
+func (p *poolOutbound) markProbeFailure(member *memberState, cause error) {
+	if member == nil || cause == nil {
+		return
+	}
+	if member.shared != nil {
+		_, blacklisted, until := member.shared.recordFailure(cause, 1, p.options.BlacklistDuration)
+		if blacklisted {
+			p.logger.Warn("health probe temporary blacklist ", member.tag, " until ", until)
+		}
+		return
+	}
+	if member.entry != nil {
+		member.entry.RecordFailure(cause)
+	}
+}
+
+func (p *poolOutbound) markProbeSuccess(member *memberState, latency time.Duration) {
+	if member == nil {
+		return
+	}
+	if member.shared != nil {
+		// If probe succeeds, immediately remove temporary blacklist.
+		member.shared.forceRelease()
+	}
+	if member.entry != nil {
+		member.entry.RecordSuccessWithLatency(latency)
+	}
+}
+
+func normalizeDomain(host string) string {
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.TrimSuffix(host, ".")
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ""
+	}
+	return host
 }
 
 // makeReleaseByTagFunc creates a release function that works before member initialization

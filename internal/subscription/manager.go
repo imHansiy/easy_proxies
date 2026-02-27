@@ -20,6 +20,7 @@ import (
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
+	"gopkg.in/yaml.v3"
 )
 
 // Logger defines logging interface.
@@ -55,7 +56,10 @@ type Manager struct {
 	// Track nodes.txt content hash to detect modifications
 	lastSubHash      string    // Hash of nodes.txt content after last subscription refresh
 	lastNodesModTime time.Time // Last known modification time of nodes.txt
+	logs             []monitor.SubscriptionLog
 }
+
+const maxSubscriptionLogs = 200
 
 // New creates a SubscriptionManager.
 func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
@@ -166,6 +170,33 @@ func (m *Manager) RefreshNow() error {
 	}
 }
 
+// RefreshSubscription triggers refresh for one subscription URL while keeping others unchanged.
+func (m *Manager) RefreshSubscription(subURL string) error {
+	subURL = strings.TrimSpace(subURL)
+	if subURL == "" {
+		return fmt.Errorf("subscription url is empty")
+	}
+	return m.doRefreshWithTarget(subURL, "manual-single")
+}
+
+// SubscriptionLogs returns recent logs filtered by subscription URL.
+func (m *Manager) SubscriptionLogs(subURL string) []monitor.SubscriptionLog {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if subURL == "" {
+		out := make([]monitor.SubscriptionLog, len(m.logs))
+		copy(out, m.logs)
+		return out
+	}
+	out := make([]monitor.SubscriptionLog, 0, len(m.logs))
+	for _, item := range m.logs {
+		if item.Subscription == subURL {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // Status returns the current refresh status.
 func (m *Manager) Status() monitor.SubscriptionStatus {
 	m.mu.RLock()
@@ -207,12 +238,22 @@ func (m *Manager) refreshLoop(interval time.Duration) {
 	}
 }
 
-// doRefresh performs a single refresh operation.
+// doRefresh performs a scheduled full refresh.
 func (m *Manager) doRefresh() {
-	// Prevent concurrent refreshes
+	if err := m.doRefreshWithTarget("", "auto"); err != nil {
+		m.logger.Errorf("refresh failed: %v", err)
+	}
+}
+
+func (m *Manager) doRefreshWithTarget(targetURL, trigger string) error {
+	start := time.Now()
+	targetURL = strings.TrimSpace(targetURL)
+	if trigger == "" {
+		trigger = "manual"
+	}
+
 	if !m.refreshMu.TryLock() {
-		m.logger.Warnf("refresh already in progress, skipping")
-		return
+		return fmt.Errorf("refresh already in progress")
 	}
 	defer m.refreshMu.Unlock()
 
@@ -227,47 +268,56 @@ func (m *Manager) doRefresh() {
 		m.mu.Unlock()
 	}()
 
-	m.logger.Infof("starting subscription refresh")
+	if targetURL == "" {
+		m.logger.Infof("starting subscription refresh")
+	} else {
+		if !m.hasSubscription(targetURL) {
+			return fmt.Errorf("subscription not found")
+		}
+		m.logger.Infof("starting subscription refresh for %s", targetURL)
+	}
 
-	// Fetch nodes from all subscriptions
-	nodes, err := m.fetchAllSubscriptions()
+	nodes, err := m.fetchAllSubscriptions(trigger, targetURL)
 	if err != nil {
 		m.logger.Errorf("fetch subscriptions failed: %v", err)
 		m.mu.Lock()
 		m.status.LastError = err.Error()
 		m.status.LastRefresh = time.Now()
 		m.mu.Unlock()
-		return
+		m.appendLog(targetURL, trigger, "error", err.Error(), 0, start)
+		return err
 	}
 
 	if len(nodes) == 0 {
-		m.logger.Warnf("no nodes fetched from subscriptions")
+		err := fmt.Errorf("no nodes fetched")
+		m.logger.Warnf("%v", err)
 		m.mu.Lock()
-		m.status.LastError = "no nodes fetched"
+		m.status.LastError = err.Error()
 		m.status.LastRefresh = time.Now()
 		m.mu.Unlock()
-		return
+		m.appendLog(targetURL, trigger, "warn", err.Error(), 0, start)
+		return err
 	}
 
 	m.logger.Infof("fetched %d nodes from subscriptions", len(nodes))
 
-	// Write subscription nodes to nodes.txt
 	nodesFilePath := m.getNodesFilePath()
 	if err := m.writeNodesToFile(nodesFilePath, nodes); err != nil {
-		m.logger.Errorf("failed to write nodes.txt: %v", err)
+		err = fmt.Errorf("write nodes.txt: %w", err)
+		m.logger.Errorf("%v", err)
 		m.mu.Lock()
-		m.status.LastError = fmt.Sprintf("write nodes.txt: %v", err)
+		m.status.LastError = err.Error()
 		m.status.LastRefresh = time.Now()
 		m.mu.Unlock()
-		return
+		m.appendLog(targetURL, trigger, "error", err.Error(), len(nodes), start)
+		return err
 	}
 	m.logger.Infof("written %d nodes to %s", len(nodes), nodesFilePath)
 
-	// Update hash and mod time after writing
 	newHash := m.computeNodesHash(nodes)
 	m.mu.Lock()
 	m.lastSubHash = newHash
-	if info, err := os.Stat(nodesFilePath); err == nil {
+	if info, statErr := os.Stat(nodesFilePath); statErr == nil {
 		m.lastNodesModTime = info.ModTime()
 	} else {
 		m.lastNodesModTime = time.Now()
@@ -275,29 +325,41 @@ func (m *Manager) doRefresh() {
 	m.status.NodesModified = false
 	m.mu.Unlock()
 
-	// Get current port mapping to preserve existing node ports
 	portMap := m.boxMgr.CurrentPortMap()
-
-	// Create new config with updated nodes
 	newCfg := m.createNewConfig(nodes)
 
-	// Trigger BoxManager reload with port preservation
 	if err := m.boxMgr.ReloadWithPortMap(newCfg, portMap); err != nil {
-		m.logger.Errorf("reload failed: %v", err)
+		err = fmt.Errorf("reload failed: %w", err)
+		m.logger.Errorf("%v", err)
 		m.mu.Lock()
 		m.status.LastError = err.Error()
 		m.status.LastRefresh = time.Now()
 		m.mu.Unlock()
-		return
+		m.appendLog(targetURL, trigger, "error", err.Error(), len(nodes), start)
+		return err
 	}
 
 	m.mu.Lock()
 	m.status.LastRefresh = time.Now()
 	m.status.NodeCount = len(nodes)
 	m.status.LastError = ""
+	if m.baseCfg != nil {
+		m.baseCfg.Nodes = newCfg.Nodes
+	}
 	m.mu.Unlock()
 
+	m.appendLog(targetURL, trigger, "info", "refresh success", len(nodes), start)
 	m.logger.Infof("subscription refresh completed, %d nodes active", len(nodes))
+	return nil
+}
+
+func (m *Manager) hasSubscription(subURL string) bool {
+	for _, item := range m.baseCfg.Subscriptions {
+		if strings.TrimSpace(item) == strings.TrimSpace(subURL) {
+			return true
+		}
+	}
+	return false
 }
 
 // getNodesFilePath returns the path to nodes.txt.
@@ -394,7 +456,8 @@ func (m *Manager) MarkNodesModified() {
 }
 
 // fetchAllSubscriptions fetches nodes from all configured subscription URLs.
-func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
+// If onlyURL is set, only that URL is fetched from network, others reuse cached nodes.
+func (m *Manager) fetchAllSubscriptions(trigger, onlyURL string) ([]config.NodeConfig, error) {
 	var allNodes []config.NodeConfig
 	var lastErr error
 
@@ -404,11 +467,33 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 	}
 
 	for _, subURL := range m.baseCfg.Subscriptions {
+		if onlyURL != "" && subURL != onlyURL {
+			cached := m.cachedNodesForSubscription(subURL)
+			if len(cached) > 0 {
+				allNodes = append(allNodes, cached...)
+				m.appendLog(subURL, trigger, "info", "reuse cached nodes", len(cached), time.Now())
+			} else {
+				m.appendLog(subURL, trigger, "warn", "skip refresh and no cached nodes", 0, time.Now())
+			}
+			continue
+		}
+
+		fetchStart := time.Now()
 		nodes, err := m.fetchSubscription(subURL, timeout)
 		if err != nil {
 			m.logger.Warnf("failed to fetch %s: %v", subURL, err)
+			m.appendLog(subURL, trigger, "error", err.Error(), 0, fetchStart)
 			lastErr = err
 			continue
+		}
+		for idx := range nodes {
+			nodes[idx].Source = config.NodeSourceSubscription
+			nodes[idx].SourceRef = subURL
+		}
+		if len(nodes) == 0 {
+			m.appendLog(subURL, trigger, "warn", "subscription contains no supported nodes", 0, fetchStart)
+		} else {
+			m.appendLog(subURL, trigger, "info", "fetched subscription", len(nodes), fetchStart)
 		}
 		m.logger.Infof("fetched %d nodes from subscription", len(nodes))
 		allNodes = append(allNodes, nodes...)
@@ -419,6 +504,56 @@ func (m *Manager) fetchAllSubscriptions() ([]config.NodeConfig, error) {
 	}
 
 	return allNodes, nil
+}
+
+func (m *Manager) cachedNodesForSubscription(subURL string) []config.NodeConfig {
+	if m.baseCfg == nil {
+		return nil
+	}
+	out := make([]config.NodeConfig, 0)
+	for _, node := range m.baseCfg.Nodes {
+		if node.Source != config.NodeSourceSubscription {
+			continue
+		}
+		if node.SourceRef == subURL {
+			out = append(out, node)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if len(m.baseCfg.Subscriptions) == 1 && m.baseCfg.Subscriptions[0] == subURL {
+		for _, node := range m.baseCfg.Nodes {
+			if node.Source == config.NodeSourceSubscription {
+				out = append(out, node)
+			}
+		}
+	}
+	return out
+}
+
+func (m *Manager) appendLog(subURL, trigger, level, message string, nodeCount int, startedAt time.Time) {
+	entry := monitor.SubscriptionLog{
+		Time:         time.Now(),
+		Subscription: strings.TrimSpace(subURL),
+		Trigger:      strings.TrimSpace(trigger),
+		Level:        strings.TrimSpace(level),
+		Message:      strings.TrimSpace(message),
+		NodeCount:    nodeCount,
+	}
+	if !startedAt.IsZero() {
+		d := time.Since(startedAt)
+		if d > 0 {
+			entry.DurationMs = d.Milliseconds()
+		}
+	}
+
+	m.mu.Lock()
+	m.logs = append(m.logs, entry)
+	if len(m.logs) > maxSubscriptionLogs {
+		m.logs = append([]monitor.SubscriptionLog(nil), m.logs[len(m.logs)-maxSubscriptionLogs:]...)
+	}
+	m.mu.Unlock()
 }
 
 // fetchSubscription fetches and parses a single subscription URL.
@@ -462,48 +597,64 @@ func (m *Manager) createNewConfig(nodes []config.NodeConfig) *config.Config {
 	// Deep copy base config
 	newCfg := *m.baseCfg
 
+	staticNodes := make([]config.NodeConfig, 0, len(newCfg.Nodes))
+	for _, n := range newCfg.Nodes {
+		if n.Source == config.NodeSourceSubscription {
+			continue
+		}
+		staticNodes = append(staticNodes, n)
+	}
+
+	allNodes := make([]config.NodeConfig, 0, len(staticNodes)+len(nodes))
+	allNodes = append(allNodes, staticNodes...)
+	allNodes = append(allNodes, nodes...)
+
 	// Assign port numbers to nodes in multi-port mode
 	if newCfg.Mode == "multi-port" {
 		portCursor := newCfg.MultiPort.BasePort
-		for i := range nodes {
-			nodes[i].Port = portCursor
+		for i := range allNodes {
+			allNodes[i].Port = portCursor
 			portCursor++
 			// Apply default credentials
-			if nodes[i].Username == "" {
-				nodes[i].Username = newCfg.MultiPort.Username
-				nodes[i].Password = newCfg.MultiPort.Password
+			if allNodes[i].Username == "" {
+				allNodes[i].Username = newCfg.MultiPort.Username
+				allNodes[i].Password = newCfg.MultiPort.Password
 			}
 		}
 	}
 
 	// Process node names
-	for i := range nodes {
-		nodes[i].Name = strings.TrimSpace(nodes[i].Name)
-		nodes[i].URI = strings.TrimSpace(nodes[i].URI)
+	for i := range allNodes {
+		allNodes[i].Name = strings.TrimSpace(allNodes[i].Name)
+		allNodes[i].URI = strings.TrimSpace(allNodes[i].URI)
 
 		// Extract name from URI fragment if not provided
-		if nodes[i].Name == "" {
-			if parsed, err := url.Parse(nodes[i].URI); err == nil && parsed.Fragment != "" {
+		if allNodes[i].Name == "" {
+			if parsed, err := url.Parse(allNodes[i].URI); err == nil && parsed.Fragment != "" {
 				if decoded, err := url.QueryUnescape(parsed.Fragment); err == nil {
-					nodes[i].Name = decoded
+					allNodes[i].Name = decoded
 				} else {
-					nodes[i].Name = parsed.Fragment
+					allNodes[i].Name = parsed.Fragment
 				}
 			}
 		}
-		if nodes[i].Name == "" {
-			nodes[i].Name = fmt.Sprintf("node-%d", i)
+		if allNodes[i].Name == "" {
+			allNodes[i].Name = fmt.Sprintf("node-%d", i)
 		}
 	}
 
-	newCfg.Nodes = nodes
+	newCfg.Nodes = allNodes
 	return &newCfg
 }
 
 // parseSubscriptionContent parses subscription content in various formats.
-// This is a simplified version - the full implementation is in config package.
+// Supported: URI list, base64 URI list, Clash/Mihomo YAML with proxies.
 func parseSubscriptionContent(content string) ([]config.NodeConfig, error) {
 	content = strings.TrimSpace(content)
+
+	if maybeClashYAML(content) {
+		return parseClashYAML(content)
+	}
 
 	// Check if it's base64 encoded
 	if isBase64(content) {
@@ -515,10 +666,20 @@ func parseSubscriptionContent(content string) ([]config.NodeConfig, error) {
 			}
 		}
 		content = string(decoded)
+		if maybeClashYAML(content) {
+			return parseClashYAML(content)
+		}
 	}
 
 	// Parse as plain text (one URI per line)
 	return parseNodesFromContent(content)
+}
+
+func maybeClashYAML(content string) bool {
+	if content == "" {
+		return false
+	}
+	return strings.Contains(content, "\nproxies:") || strings.HasPrefix(content, "proxies:")
 }
 
 func isBase64(s string) bool {
@@ -563,6 +724,243 @@ func isProxyURI(s string) bool {
 		}
 	}
 	return false
+}
+
+type clashConfig struct {
+	Proxies []clashProxy `yaml:"proxies"`
+}
+
+type clashProxy struct {
+	Name              string                 `yaml:"name"`
+	Type              string                 `yaml:"type"`
+	Server            string                 `yaml:"server"`
+	Port              int                    `yaml:"port"`
+	UUID              string                 `yaml:"uuid"`
+	Password          string                 `yaml:"password"`
+	Cipher            string                 `yaml:"cipher"`
+	Network           string                 `yaml:"network"`
+	TLS               bool                   `yaml:"tls"`
+	SkipCertVerify    bool                   `yaml:"skip-cert-verify"`
+	ServerName        string                 `yaml:"servername"`
+	SNI               string                 `yaml:"sni"`
+	Flow              string                 `yaml:"flow"`
+	WSOpts            *clashWSOptions        `yaml:"ws-opts"`
+	GrpcOpts          *clashGrpcOptions      `yaml:"grpc-opts"`
+	RealityOpts       *clashRealityOptions   `yaml:"reality-opts"`
+	ClientFingerprint string                 `yaml:"client-fingerprint"`
+	Plugin            string                 `yaml:"plugin"`
+	PluginOpts        map[string]interface{} `yaml:"plugin-opts"`
+}
+
+type clashWSOptions struct {
+	Path    string            `yaml:"path"`
+	Headers map[string]string `yaml:"headers"`
+}
+
+type clashGrpcOptions struct {
+	GrpcServiceName string `yaml:"grpc-service-name"`
+}
+
+type clashRealityOptions struct {
+	PublicKey string `yaml:"public-key"`
+	ShortID   string `yaml:"short-id"`
+}
+
+func parseClashYAML(content string) ([]config.NodeConfig, error) {
+	var clash clashConfig
+	if err := yaml.Unmarshal([]byte(content), &clash); err != nil {
+		return nil, fmt.Errorf("parse clash yaml: %w", err)
+	}
+
+	nodes := make([]config.NodeConfig, 0, len(clash.Proxies))
+	for _, proxy := range clash.Proxies {
+		uri := convertClashProxyToURI(proxy)
+		if uri == "" {
+			continue
+		}
+		nodes = append(nodes, config.NodeConfig{
+			Name: strings.TrimSpace(proxy.Name),
+			URI:  uri,
+		})
+	}
+	return nodes, nil
+}
+
+func convertClashProxyToURI(p clashProxy) string {
+	if strings.TrimSpace(p.Server) == "" || p.Port <= 0 {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(p.Type)) {
+	case "vmess":
+		if strings.TrimSpace(p.UUID) == "" {
+			return ""
+		}
+		return buildVMessURI(p)
+	case "vless":
+		if strings.TrimSpace(p.UUID) == "" {
+			return ""
+		}
+		return buildVLESSURI(p)
+	case "trojan":
+		if strings.TrimSpace(p.Password) == "" {
+			return ""
+		}
+		return buildTrojanURI(p)
+	case "ss", "shadowsocks":
+		if strings.TrimSpace(p.Cipher) == "" || strings.TrimSpace(p.Password) == "" {
+			return ""
+		}
+		return buildShadowsocksURI(p)
+	case "hysteria2", "hy2":
+		if strings.TrimSpace(p.Password) == "" {
+			return ""
+		}
+		return buildHysteria2URI(p)
+	default:
+		return ""
+	}
+}
+
+func buildVMessURI(p clashProxy) string {
+	params := url.Values{}
+	if p.Network != "" && p.Network != "tcp" {
+		params.Set("type", p.Network)
+	}
+	if p.TLS {
+		params.Set("security", "tls")
+		if p.ServerName != "" {
+			params.Set("sni", p.ServerName)
+		} else if p.SNI != "" {
+			params.Set("sni", p.SNI)
+		}
+	}
+	if p.WSOpts != nil {
+		if p.WSOpts.Path != "" {
+			params.Set("path", p.WSOpts.Path)
+		}
+		if host, ok := p.WSOpts.Headers["Host"]; ok {
+			params.Set("host", host)
+		}
+	}
+	if p.ClientFingerprint != "" {
+		params.Set("fp", p.ClientFingerprint)
+	}
+
+	query := ""
+	if len(params) > 0 {
+		query = "?" + params.Encode()
+	}
+
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("vmess://%s@%s:%d%s#%s", p.UUID, p.Server, p.Port, query, url.QueryEscape(name))
+}
+
+func buildVLESSURI(p clashProxy) string {
+	params := url.Values{}
+	params.Set("encryption", "none")
+
+	if p.Network != "" && p.Network != "tcp" {
+		params.Set("type", p.Network)
+	}
+	if p.Flow != "" {
+		params.Set("flow", p.Flow)
+	}
+	if p.TLS {
+		params.Set("security", "tls")
+		if p.ServerName != "" {
+			params.Set("sni", p.ServerName)
+		} else if p.SNI != "" {
+			params.Set("sni", p.SNI)
+		}
+	}
+	if p.RealityOpts != nil {
+		params.Set("security", "reality")
+		if p.RealityOpts.PublicKey != "" {
+			params.Set("pbk", p.RealityOpts.PublicKey)
+		}
+		if p.RealityOpts.ShortID != "" {
+			params.Set("sid", p.RealityOpts.ShortID)
+		}
+		if p.ServerName != "" {
+			params.Set("sni", p.ServerName)
+		}
+	}
+	if p.WSOpts != nil {
+		if p.WSOpts.Path != "" {
+			params.Set("path", p.WSOpts.Path)
+		}
+		if host, ok := p.WSOpts.Headers["Host"]; ok {
+			params.Set("host", host)
+		}
+	}
+	if p.GrpcOpts != nil && p.GrpcOpts.GrpcServiceName != "" {
+		params.Set("serviceName", p.GrpcOpts.GrpcServiceName)
+	}
+	if p.ClientFingerprint != "" {
+		params.Set("fp", p.ClientFingerprint)
+	}
+
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", p.UUID, p.Server, p.Port, params.Encode(), url.QueryEscape(name))
+}
+
+func buildTrojanURI(p clashProxy) string {
+	params := url.Values{}
+	if p.Network != "" && p.Network != "tcp" {
+		params.Set("type", p.Network)
+	}
+	if p.ServerName != "" {
+		params.Set("sni", p.ServerName)
+	} else if p.SNI != "" {
+		params.Set("sni", p.SNI)
+	}
+	if p.SkipCertVerify {
+		params.Set("allowInsecure", "1")
+	}
+	if p.WSOpts != nil {
+		if p.WSOpts.Path != "" {
+			params.Set("path", p.WSOpts.Path)
+		}
+		if host, ok := p.WSOpts.Headers["Host"]; ok {
+			params.Set("host", host)
+		}
+	}
+	if p.ClientFingerprint != "" {
+		params.Set("fp", p.ClientFingerprint)
+	}
+
+	query := ""
+	if len(params) > 0 {
+		query = "?" + params.Encode()
+	}
+
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("trojan://%s@%s:%d%s#%s", p.Password, p.Server, p.Port, query, url.QueryEscape(name))
+}
+
+func buildShadowsocksURI(p clashProxy) string {
+	userInfo := base64.StdEncoding.EncodeToString([]byte(p.Cipher + ":" + p.Password))
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("ss://%s@%s:%d#%s", userInfo, p.Server, p.Port, url.QueryEscape(name))
+}
+
+func buildHysteria2URI(p clashProxy) string {
+	params := url.Values{}
+	if p.ServerName != "" {
+		params.Set("sni", p.ServerName)
+	} else if p.SNI != "" {
+		params.Set("sni", p.SNI)
+	}
+	if p.SkipCertVerify {
+		params.Set("insecure", "1")
+	}
+
+	query := ""
+	if len(params) > 0 {
+		query = "?" + params.Encode()
+	}
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("hysteria2://%s@%s:%d%s#%s", p.Password, p.Server, p.Port, query, url.QueryEscape(name))
 }
 
 type defaultLogger struct{}

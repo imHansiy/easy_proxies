@@ -162,11 +162,15 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 		inbounds = append(inbounds, inbound)
 		poolOptions := poolout.Options{
-			Mode:              cfg.Pool.Mode,
-			Members:           memberTags,
-			FailureThreshold:  cfg.Pool.FailureThreshold,
-			BlacklistDuration: cfg.Pool.BlacklistDuration,
-			Metadata:          metadata,
+			Mode:                    cfg.Pool.Mode,
+			Members:                 memberTags,
+			FailureThreshold:        cfg.Pool.FailureThreshold,
+			BlacklistDuration:       cfg.Pool.BlacklistDuration,
+			DomainFailureThreshold:  cfg.Pool.DomainFailureThreshold,
+			DomainBlacklistDuration: cfg.Pool.DomainBlacklistDuration,
+			DomainRecheckInterval:   cfg.Pool.DomainRecheckInterval,
+			DomainRecheckTimeout:    cfg.Pool.DomainRecheckTimeout,
+			Metadata:                metadata,
 		}
 		outbounds = append(outbounds, option.Outbound{
 			Type:    poolout.Type,
@@ -187,11 +191,15 @@ func Build(cfg *config.Config) (option.Options, error) {
 			perMeta := map[string]poolout.MemberMeta{tag: meta}
 			poolTag := fmt.Sprintf("%s-%s", poolout.Tag, tag)
 			perOptions := poolout.Options{
-				Mode:              "sequential",
-				Members:           []string{tag},
-				FailureThreshold:  cfg.Pool.FailureThreshold,
-				BlacklistDuration: cfg.Pool.BlacklistDuration,
-				Metadata:          perMeta,
+				Mode:                    "sequential",
+				Members:                 []string{tag},
+				FailureThreshold:        cfg.Pool.FailureThreshold,
+				BlacklistDuration:       cfg.Pool.BlacklistDuration,
+				DomainFailureThreshold:  cfg.Pool.DomainFailureThreshold,
+				DomainBlacklistDuration: cfg.Pool.DomainBlacklistDuration,
+				DomainRecheckInterval:   cfg.Pool.DomainRecheckInterval,
+				DomainRecheckTimeout:    cfg.Pool.DomainRecheckTimeout,
+				Metadata:                perMeta,
 			}
 			perPool := option.Outbound{
 				Type:    poolout.Type,
@@ -250,11 +258,15 @@ func Build(cfg *config.Config) (option.Options, error) {
 
 			regionPoolTag := fmt.Sprintf("pool-%s", region)
 			regionPoolOptions := poolout.Options{
-				Mode:              cfg.Pool.Mode,
-				Members:           members,
-				FailureThreshold:  cfg.Pool.FailureThreshold,
-				BlacklistDuration: cfg.Pool.BlacklistDuration,
-				Metadata:          regionMeta,
+				Mode:                    cfg.Pool.Mode,
+				Members:                 members,
+				FailureThreshold:        cfg.Pool.FailureThreshold,
+				BlacklistDuration:       cfg.Pool.BlacklistDuration,
+				DomainFailureThreshold:  cfg.Pool.DomainFailureThreshold,
+				DomainBlacklistDuration: cfg.Pool.DomainBlacklistDuration,
+				DomainRecheckInterval:   cfg.Pool.DomainRecheckInterval,
+				DomainRecheckTimeout:    cfg.Pool.DomainRecheckTimeout,
+				Metadata:                regionMeta,
 			}
 			outbounds = append(outbounds, option.Outbound{
 				Type:    poolout.Type,

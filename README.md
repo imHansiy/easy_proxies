@@ -25,6 +25,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **WebUI Settings**: Modify external_ip and probe_target without editing config files
 - **Auto Health Check**: Initial check on startup, periodic checks every 5 minutes
 - **Smart Node Filtering**: Auto-hide unavailable nodes, sort by latency
+- **Domain-Level Blacklist**: Track blocked domains per node (e.g. Cloudflare-protected targets), with blacklist APIs and scheduled auto-recheck recovery
 - **Port Preservation**: Existing nodes keep their ports when adding/updating nodes
 
 ### Security & Performance (New!)
@@ -38,6 +39,8 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 
 ### Deployment
 - **Flexible Configuration**: Config file, node file, subscription links
+- **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite support for nodes and runtime state
+- **Environment Variables**: Supports `EASY_PROXIES_DB_DRIVER`, `EASY_PROXIES_DB_DSN`, `DATABASE_URL`, etc.
 - **Multi-Architecture**: Docker images for both AMD64 and ARM64
 - **Password Protection**: WebUI authentication with secure session management
 
@@ -71,7 +74,11 @@ docker compose up -d
 **Local Build:**
 
 ```bash
-go build -tags "with_utls with_quic with_grpc" -o easy-proxies ./cmd/easy_proxies
+# Recommended: use helper script (includes full tags with QUIC by default)
+./run.sh --config config.yaml
+
+# Or build manually
+go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
 ./easy-proxies --config config.yaml
 ```
 
@@ -467,11 +474,18 @@ subscription_refresh:
 
 **WebUI and API Support:**
 
-- WebUI shows subscription status (node count, last refresh time, errors)
+- WebUI shows subscription status (node count, last refresh time, **next auto-refresh time**, errors)
 - Manual refresh button available
+- Subscription nodes are auto-probed on initial load/refresh: failed nodes are temporarily blacklisted and automatically unblacklisted after a successful probe
 - API endpoints:
   - `GET /api/subscription/status` - Get subscription status
   - `POST /api/subscription/refresh` - Trigger manual refresh
+  - `GET /api/subscriptions` - Get subscription list
+  - `POST /api/subscriptions` - Add subscription
+  - `PUT /api/subscriptions/:index` - Edit subscription
+  - `DELETE /api/subscriptions/:index` - Delete subscription
+  - `POST /api/subscriptions/:index/refresh` - Refresh one subscription only
+  - `GET /api/subscriptions/:index/logs` - Get update logs for one subscription
 
 ## Ports
 
@@ -535,6 +549,8 @@ go build -o easy-proxies ./cmd/easy_proxies
 # Full feature build
 go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
 ```
+
+> `hysteria2://` / `hy2://` requires a build with `with_quic` enabled (using `./run.sh` is recommended).
 
 ## Changelog
 

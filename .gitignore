@@ -8,6 +8,7 @@ easy_proxies-*
 # Configuration (contains sensitive data)
 config.yaml
 nodes.txt
+.env
 
 # GeoIP database (auto-downloaded)
 *.mmdb
