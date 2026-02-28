@@ -984,10 +984,29 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
 			return
 		}
-		writeJSON(w, map[string]any{
+
+		needRestart := s.subRefresher == nil
+		needRefresh := s.subRefresher != nil
+		refreshErr := ""
+		if s.subRefresher != nil {
+			if err := s.subRefresher.RefreshNow(); err != nil {
+				refreshErr = err.Error()
+			} else {
+				needRefresh = false
+			}
+		}
+
+		resp := map[string]any{
 			"message":       "订阅已删除",
 			"subscriptions": append([]string(nil), s.cfgSrc.Subscriptions...),
-		})
+			"need_restart":  needRestart,
+			"need_refresh":  needRefresh,
+		}
+		if refreshErr != "" {
+			resp["message"] = "订阅已删除，但刷新失败，请手动刷新"
+			resp["refresh_error"] = refreshErr
+		}
+		writeJSON(w, resp)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}

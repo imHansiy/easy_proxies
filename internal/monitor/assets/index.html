@@ -2611,7 +2611,8 @@
         subscriptions = data.subscriptions || [];
         await loadSubscriptions();
         await loadConfigNodes(true);
-        showToast('订阅已删除', 'success');
+        const msg = data.message || '订阅已删除';
+        showToast(msg, data.refresh_error ? 'error' : 'success');
         fetchSubscriptionStatus();
       } catch (err) {
         showToast('删除失败: ' + err.message, 'error');

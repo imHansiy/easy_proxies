@@ -198,12 +198,18 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 				m.logger.Warnf("error closing old instance: %v", err)
 			}
 		}
+		if m.monitorMgr != nil {
+			m.monitorMgr.ResetNodes()
+		}
 		pool.ResetSharedStateStore()
 		m.applyConfigSettings(newCfg)
 		m.mu.Lock()
 		m.currentBox = nil
 		m.cfg = newCfg
 		m.mu.Unlock()
+		if err := m.persistNodesForConfig(ctx, newCfg); err != nil {
+			m.logger.Warnf("persist nodes after monitor-only reload failed: %v", err)
+		}
 		m.logger.Warnf("reload completed in monitor-only mode: no nodes configured")
 		return nil
 	}
@@ -219,6 +225,9 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		}
 		// Give OS time to release ports
 		time.Sleep(500 * time.Millisecond)
+	}
+	if m.monitorMgr != nil {
+		m.monitorMgr.ResetNodes()
 	}
 
 	// Reset shared state store to ensure clean state for new config
@@ -264,6 +273,10 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		m.healthCheckStarted = true
 	}
 	m.mu.Unlock()
+
+	if err := m.persistNodesForConfig(ctx, newCfg); err != nil {
+		m.logger.Warnf("persist nodes after reload failed: %v", err)
+	}
 
 	m.logger.Infof("reload completed successfully with %d nodes", len(newCfg.Nodes))
 	return nil
@@ -755,6 +768,16 @@ func (m *Manager) persistNodesLocked(ctx context.Context) error {
 		return m.store.SaveNodes(ctx, m.cfg.Nodes)
 	}
 	return m.cfg.Save()
+}
+
+func (m *Manager) persistNodesForConfig(ctx context.Context, cfg *config.Config) error {
+	if cfg == nil {
+		return nil
+	}
+	if m.store != nil {
+		return m.store.SaveNodes(ctx, cfg.Nodes)
+	}
+	return cfg.Save()
 }
 
 func normalizeSubscriptionList(items []string) []string {

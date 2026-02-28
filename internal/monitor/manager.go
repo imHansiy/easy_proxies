@@ -449,6 +449,17 @@ func (m *Manager) Snapshot() []Snapshot {
 	return m.SnapshotFiltered(false)
 }
 
+// ResetNodes clears all tracked runtime node snapshots.
+// New nodes will be re-registered by the running box instance.
+func (m *Manager) ResetNodes() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.nodes = make(map[string]*entry)
+	m.mu.Unlock()
+}
+
 // SnapshotFiltered returns a sorted copy of current node states.
 // If onlyAvailable is true, only returns nodes that passed initial health check.
 // Nodes that haven't been checked yet are also included (they will be checked on first use).

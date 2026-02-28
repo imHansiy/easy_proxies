@@ -286,12 +286,46 @@ func (m *Manager) doRefreshWithTarget(targetURL, trigger string) error {
 
 	if targetURL == "" {
 		if len(m.baseCfg.Subscriptions) == 0 {
+			newCfg := m.createNewConfig(nil)
+			hadSubscriptionNodes := len(newCfg.Nodes) != len(m.baseCfg.Nodes)
+			if hadSubscriptionNodes {
+				portMap := m.boxMgr.CurrentPortMap()
+				if err := m.boxMgr.ReloadWithPortMap(newCfg, portMap); err != nil {
+					err = fmt.Errorf("reload failed while clearing subscription nodes: %w", err)
+					m.logger.Errorf("%v", err)
+					m.mu.Lock()
+					m.status.LastError = err.Error()
+					m.status.LastRefresh = time.Now()
+					m.mu.Unlock()
+					m.appendLog("", trigger, "error", err.Error(), 0, start)
+					return err
+				}
+
+				nodesFilePath := m.getNodesFilePath()
+				fileNodes := nodesFromSource(newCfg.Nodes, config.NodeSourceFile)
+				if err := m.writeNodesToFile(nodesFilePath, fileNodes); err != nil {
+					m.logger.Warnf("failed to sync nodes file after subscription removal: %v", err)
+				}
+			}
+
 			m.mu.Lock()
 			m.status.LastError = ""
 			m.status.LastRefresh = time.Now()
 			m.status.NodeCount = 0
+			m.status.NodesModified = false
+			m.lastSubHash = m.computeNodesHash(nil)
+			m.lastNodesModTime = time.Now()
+			if m.baseCfg != nil {
+				m.baseCfg.Nodes = newCfg.Nodes
+			}
 			m.mu.Unlock()
-			m.appendLog("", trigger, "info", "skip refresh: no subscriptions configured", 0, start)
+
+			if hadSubscriptionNodes {
+				m.appendLog("", trigger, "info", "no subscriptions configured, removed subscription nodes", 0, start)
+				m.logger.Infof("no subscriptions configured, removed subscription nodes")
+			} else {
+				m.appendLog("", trigger, "info", "skip refresh: no subscriptions configured", 0, start)
+			}
 			return nil
 		}
 		m.logger.Infof("starting subscription refresh")
@@ -552,6 +586,16 @@ func (m *Manager) cachedNodesForSubscription(subURL string) []config.NodeConfig 
 			if node.Source == config.NodeSourceSubscription {
 				out = append(out, node)
 			}
+		}
+	}
+	return out
+}
+
+func nodesFromSource(nodes []config.NodeConfig, source config.NodeSource) []config.NodeConfig {
+	out := make([]config.NodeConfig, 0)
+	for _, node := range nodes {
+		if node.Source == source {
+			out = append(out, node)
 		}
 	}
 	return out
