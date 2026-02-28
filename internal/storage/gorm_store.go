@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -32,6 +33,22 @@ type nodeModel struct {
 }
 
 func (nodeModel) TableName() string { return "ep_nodes" }
+
+type subscriptionModel struct {
+	Position  int       `gorm:"primaryKey"`
+	URL       string    `gorm:"type:text;not null"`
+	UpdatedAt time.Time `gorm:"not null"`
+}
+
+func (subscriptionModel) TableName() string { return "ep_subscriptions" }
+
+type runtimeConfigModel struct {
+	ID        int16     `gorm:"primaryKey"`
+	Payload   string    `gorm:"type:text;not null"`
+	UpdatedAt time.Time `gorm:"not null"`
+}
+
+func (runtimeConfigModel) TableName() string { return "ep_runtime_config" }
 
 type settingsModel struct {
 	ID             int16     `gorm:"primaryKey"`
@@ -111,6 +128,8 @@ func (s *GORMStore) Close() error {
 func (s *GORMStore) EnsureSchema(ctx context.Context) error {
 	return s.db.WithContext(ctx).AutoMigrate(
 		&nodeModel{},
+		&subscriptionModel{},
+		&runtimeConfigModel{},
 		&settingsModel{},
 		&nodeRuntimeModel{},
 		&sharedRuntimeModel{},
@@ -160,6 +179,73 @@ func (s *GORMStore) SaveNodes(ctx context.Context, nodes []config.NodeConfig) er
 		}
 		return nil
 	})
+}
+
+func (s *GORMStore) LoadSubscriptions(ctx context.Context) ([]string, error) {
+	var rows []subscriptionModel
+	if err := s.db.WithContext(ctx).Order("position asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.URL)
+	}
+	return out, nil
+}
+
+func (s *GORMStore) SaveSubscriptions(ctx context.Context, subscriptions []string) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&subscriptionModel{}).Error; err != nil {
+			return err
+		}
+		for idx, subURL := range subscriptions {
+			row := subscriptionModel{
+				Position:  idx,
+				URL:       subURL,
+				UpdatedAt: time.Now(),
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *GORMStore) LoadRuntimeConfig(ctx context.Context) (RuntimeConfig, bool, error) {
+	var row runtimeConfigModel
+	err := s.db.WithContext(ctx).First(&row, "id = ?", 1).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return RuntimeConfig{}, false, nil
+	}
+	if err != nil {
+		return RuntimeConfig{}, false, err
+	}
+
+	var runtime RuntimeConfig
+	if err := json.Unmarshal([]byte(row.Payload), &runtime); err != nil {
+		return RuntimeConfig{}, false, fmt.Errorf("decode runtime config: %w", err)
+	}
+
+	return runtime, true, nil
+}
+
+func (s *GORMStore) SaveRuntimeConfig(ctx context.Context, runtime RuntimeConfig) error {
+	payload, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("encode runtime config: %w", err)
+	}
+
+	row := runtimeConfigModel{
+		ID:        1,
+		Payload:   string(payload),
+		UpdatedAt: time.Now(),
+	}
+
+	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "id"}},
+		DoUpdates: clause.AssignmentColumns([]string{"payload", "updated_at"}),
+	}).Create(&row).Error
 }
 
 func (s *GORMStore) LoadSettings(ctx context.Context) (Settings, bool, error) {

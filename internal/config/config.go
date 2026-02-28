@@ -150,7 +150,7 @@ type SubscriptionRefreshConfig struct {
 type NodeSource string
 
 const (
-	NodeSourceInline       NodeSource = "inline"       // Defined directly in config.yaml nodes array
+	NodeSourceInline       NodeSource = "inline"       // Defined directly in file-based config nodes array
 	NodeSourceFile         NodeSource = "nodes_file"   // Loaded from external nodes file
 	NodeSourceSubscription NodeSource = "subscription" // Fetched from subscription URL
 )
@@ -174,19 +174,30 @@ func (n *NodeConfig) NodeKey() string {
 
 // Load reads YAML config from disk and applies defaults/validation.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("decode config: %w", err)
-	}
 	cfg.filePath = path
+
+	if strings.TrimSpace(path) != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("read config: %w", err)
+			}
+			log.Printf("INFO: config file %q not found, using env/defaults", path)
+		} else {
+			if err := yaml.Unmarshal(data, &cfg); err != nil {
+				return nil, fmt.Errorf("decode config: %w", err)
+			}
+			cfg.filePath = path
+		}
+	}
 
 	// Resolve nodes_file path relative to config file directory
 	if cfg.NodesFile != "" && !filepath.IsAbs(cfg.NodesFile) {
-		configDir := filepath.Dir(path)
+		configDir := "."
+		if strings.TrimSpace(path) != "" {
+			configDir = filepath.Dir(path)
+		}
 		cfg.NodesFile = filepath.Join(configDir, cfg.NodesFile)
 	}
 
@@ -983,9 +994,9 @@ func writeNodesToFile(path string, nodes []NodeConfig) error {
 }
 
 // SaveNodes persists nodes to their appropriate locations based on source.
-// - subscription/nodes_file nodes → nodes.txt (or configured nodes_file)
-// - inline nodes → config.yaml nodes array
-// Config.yaml structure (subscriptions, nodes_file) is preserved.
+// - subscription/nodes_file nodes -> nodes.txt (or configured nodes_file)
+// - inline nodes -> file-based config nodes array (legacy fallback mode)
+// File structure (subscriptions, nodes_file) is preserved.
 func (c *Config) SaveNodes() error {
 	if c == nil {
 		return errors.New("config is nil")
@@ -1029,7 +1040,7 @@ func (c *Config) SaveNodes() error {
 		}
 	}
 
-	// Only update config.yaml if there are inline nodes to save
+	// Only update file-based config if there are inline nodes to save
 	// and preserve the original config structure
 	if len(inlineNodes) > 0 {
 		// Read original config to preserve structure
@@ -1098,7 +1109,7 @@ func (c *Config) SaveSettings() error {
 	return nil
 }
 
-// SaveSubscriptions persists only the subscriptions list to config.yaml.
+// SaveSubscriptions persists only the subscriptions list to file-based config (legacy fallback mode).
 func (c *Config) SaveSubscriptions() error {
 	if c == nil {
 		return errors.New("config is nil")
@@ -1273,6 +1284,178 @@ func (c *Config) ApplyEnvOverrides() error {
 		c.Listener.Password = strings.TrimSpace(v)
 	}
 
+	if v, ok, _ := lookupEnvAlias("MULTI_PORT_ADDRESS"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.MultiPort.Address = v
+		}
+	}
+
+	if v, ok, key := lookupEnvAlias("MULTI_PORT_BASE_PORT"); ok {
+		port, err := parsePortEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.MultiPort.BasePort = port
+	}
+
+	if v, ok, _ := lookupEnvAlias("MULTI_PORT_USERNAME"); ok {
+		c.MultiPort.Username = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("MULTI_PORT_PASSWORD"); ok {
+		c.MultiPort.Password = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("POOL_MODE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.Pool.Mode = v
+		}
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_FAILURE_THRESHOLD"); ok {
+		n, err := parseIntEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.FailureThreshold = n
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_BLACKLIST_DURATION"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.BlacklistDuration = d
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_DOMAIN_FAILURE_THRESHOLD"); ok {
+		n, err := parseIntEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.DomainFailureThreshold = n
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_DOMAIN_BLACKLIST_DURATION"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.DomainBlacklistDuration = d
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_DOMAIN_RECHECK_INTERVAL"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.DomainRecheckInterval = d
+	}
+
+	if v, ok, key := lookupEnvAlias("POOL_DOMAIN_RECHECK_TIMEOUT"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.Pool.DomainRecheckTimeout = d
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_ENABLED"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.Enabled = parsed
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_INTERVAL"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.Interval = d
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_TIMEOUT"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.Timeout = d
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_HEALTH_CHECK_TIMEOUT"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.HealthCheckTimeout = d
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_DRAIN_TIMEOUT"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.DrainTimeout = d
+	}
+
+	if v, ok, key := lookupEnvAlias("SUBSCRIPTION_REFRESH_MIN_AVAILABLE_NODES"); ok {
+		n, err := parseIntEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.SubscriptionRefresh.MinAvailableNodes = n
+	}
+
+	if v, ok, key := lookupEnvAlias("GEOIP_ENABLED"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.GeoIP.Enabled = parsed
+	}
+
+	if v, ok, _ := lookupEnvAlias("GEOIP_DATABASE_PATH"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.GeoIP.DatabasePath = v
+		}
+	}
+
+	if v, ok, _ := lookupEnvAlias("GEOIP_LISTEN"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			c.GeoIP.Listen = v
+		}
+	}
+
+	if v, ok, key := lookupEnvAlias("GEOIP_PORT"); ok {
+		port, err := parsePortEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.GeoIP.Port = port
+	}
+
+	if v, ok, key := lookupEnvAlias("GEOIP_AUTO_UPDATE_ENABLED"); ok {
+		parsed, err := parseBoolEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.GeoIP.AutoUpdateEnabled = parsed
+	}
+
+	if v, ok, key := lookupEnvAlias("GEOIP_AUTO_UPDATE_INTERVAL"); ok {
+		d, err := parseDurationEnv(key, v)
+		if err != nil {
+			return err
+		}
+		c.GeoIP.AutoUpdateInterval = d
+	}
+
 	if v, ok, _ := lookupEnvAlias("NODES_FILE"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" {
@@ -1362,6 +1545,30 @@ func parsePortEnv(key, raw string) (uint16, error) {
 		return 0, fmt.Errorf("invalid %s: must be between 1 and 65535", key)
 	}
 	return uint16(n), nil
+}
+
+func parseIntEnv(key, raw string) (int, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return 0, fmt.Errorf("invalid %s: empty value", key)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return n, nil
+}
+
+func parseDurationEnv(key, raw string) (time.Duration, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return 0, fmt.Errorf("invalid %s: empty value", key)
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	return d, nil
 }
 
 func parseSubscriptionEnvList(raw string) []string {

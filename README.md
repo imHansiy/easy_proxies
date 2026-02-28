@@ -39,7 +39,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 
 ### Deployment
 - **Flexible Configuration**: Config file, node file, subscription links
-- **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite support for nodes and runtime state
+- **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite for nodes, subscriptions, runtime settings, and runtime state
 - **Environment Variables**: Supports `DB_DRIVER`, `DB_DSN`, `DATABASE_URL`, etc.
 - **Multi-Architecture**: Docker images for both AMD64 and ARM64
 - **Password Protection**: WebUI authentication with secure session management
@@ -48,14 +48,22 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 
 ### 1. Configuration
 
-Copy example config files:
+`config.yaml` is no longer required. Use environment variables (or `.env`) as the source of truth.
 
-```bash
-cp config.example.yaml config.yaml
-cp nodes.example nodes.txt
+Environment-only bootstrap example (`.env`):
+
+```env
+DB_DRIVER=postgres
+DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=require
+DB_AUTO_MIGRATE=true
+
+MANAGEMENT_LISTEN=0.0.0.0:9090
+LISTENER_ADDRESS=0.0.0.0
+LISTENER_PORT=2323
+LISTENER_USERNAME=username
+LISTENER_PASSWORD=password
+SUBSCRIPTION_REFRESH_ENABLED=true
 ```
-
-Edit `config.yaml` to set listen address and credentials, edit `nodes.txt` to add proxy nodes.
 
 ### 2. Run
 
@@ -75,11 +83,11 @@ docker compose up -d
 
 ```bash
 # Recommended: use helper script (includes full tags with QUIC by default)
-./run.sh --config config.yaml
+./run.sh
 
 # Or build manually
 go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
-./easy-proxies --config config.yaml
+./easy-proxies
 ```
 
 ## Configuration
@@ -272,10 +280,10 @@ Supported formats:
 
 **Method 2: Node File**
 
-Specify in `config.yaml`:
+Specify via environment variable:
 
-```yaml
-nodes_file: nodes.txt
+```env
+NODES_FILE=nodes.txt
 ```
 
 `nodes.txt` - one URI per line:
@@ -373,7 +381,7 @@ Click the ⚙️ gear icon in the header to access settings:
 | External IP | IP address used in exported proxy URIs (replaces `0.0.0.0`) |
 | Probe Target | Health check target address (format: `host:port`) |
 
-Changes are saved to `config.yaml` immediately and take effect without restart.
+With DB storage enabled, changes are saved to the database immediately and take effect without restart.
 
 ### Node Management
 
@@ -501,6 +509,8 @@ subscription_refresh:
 
 This repo includes a Render Blueprint at `render.yaml`.
 
+With DB storage enabled, nodes, subscriptions, runtime settings, and runtime state are persisted in the database.
+
 Quick steps:
 
 1. In Render, choose **New +** -> **Blueprint** and connect this repository
@@ -532,12 +542,11 @@ services:
     container_name: easy-proxies
     restart: unless-stopped
     network_mode: host
-    volumes:
-      - ./config.yaml:/etc/easy-proxies/config.yaml
-      - ./nodes.txt:/etc/easy-proxies/nodes.txt
+    env_file:
+      - ./.env
 ```
 
-> **Note**: Config files need write permission for WebUI settings. Run `chmod 666 config.yaml nodes.txt` if you encounter permission errors.
+> **Note**: If you want file-based node bootstrap, mount `nodes.txt` and set `NODES_FILE`.
 
 > **Advantage**: Container uses host network directly, all ports exposed automatically. Auto port reassignment works seamlessly.
 
@@ -552,13 +561,12 @@ services:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
     container_name: easy-proxies
     restart: unless-stopped
+    env_file:
+      - ./.env
     ports:
       - "2323:2323"       # Pool/Hybrid mode entry
       - "9091:9091"       # Web dashboard
       - "24000-24200:24000-24200"  # Multi-Port/Hybrid mode
-    volumes:
-      - ./config.yaml:/etc/easy-proxies/config.yaml
-      - ./nodes.txt:/etc/easy-proxies/nodes.txt
 ```
 
 > **Note**: Multi-Port and Hybrid modes require mapping the port range. Map enough ports for your nodes plus some buffer for auto-reassignment.

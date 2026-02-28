@@ -12,14 +12,12 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -u 10001 easy \
-    && mkdir -p /etc/easy-proxies \
-    && chown -R easy:easy /etc/easy-proxies
-WORKDIR /app
+    && mkdir -p /var/lib/easy-proxies \
+    && chown -R easy:easy /var/lib/easy-proxies
+WORKDIR /var/lib/easy-proxies
 COPY --from=builder /src/easy-proxies /usr/local/bin/easy-proxies
-COPY --chown=easy:easy config.example.yaml /etc/easy-proxies/config.yaml
 # Render Web Service may inject a dynamic PORT (commonly 10000).
 # Other ports are kept for generic Docker deployments.
 EXPOSE 10000 2323 9091 24000-24200
 USER easy
 ENTRYPOINT ["/usr/local/bin/easy-proxies"]
-CMD ["--config", "/etc/easy-proxies/config.yaml"]

@@ -109,12 +109,11 @@ func (m *Manager) Start() {
 		m.logger.Infof("subscription refresh disabled")
 		return
 	}
-	if len(m.baseCfg.Subscriptions) == 0 {
-		m.logger.Infof("no subscriptions configured, refresh disabled")
-		return
-	}
 
 	interval := m.baseCfg.SubscriptionRefresh.Interval
+	if len(m.baseCfg.Subscriptions) == 0 {
+		m.logger.Infof("no subscriptions configured, refresh loop started and waiting for subscriptions")
+	}
 	m.logger.Infof("starting subscription refresh, interval: %s", interval)
 
 	go m.refreshLoop(interval)
@@ -269,6 +268,15 @@ func (m *Manager) doRefreshWithTarget(targetURL, trigger string) error {
 	}()
 
 	if targetURL == "" {
+		if len(m.baseCfg.Subscriptions) == 0 {
+			m.mu.Lock()
+			m.status.LastError = ""
+			m.status.LastRefresh = time.Now()
+			m.status.NodeCount = 0
+			m.mu.Unlock()
+			m.appendLog("", trigger, "info", "skip refresh: no subscriptions configured", 0, start)
+			return nil
+		}
 		m.logger.Infof("starting subscription refresh")
 	} else {
 		if !m.hasSubscription(targetURL) {

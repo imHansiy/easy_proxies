@@ -3,6 +3,8 @@ services:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
     container_name: easy-proxies
     restart: unless-stopped
+    env_file:
+      - ./.env
     # 方式一：使用主机网络模式（推荐，支持端口自动重分配）
     network_mode: host
     # 方式二：手动映射端口（注释掉 network_mode，启用下面的 ports）
@@ -14,7 +16,7 @@ services:
     #   # Multi-port 端口范围（multi-port/hybrid 模式使用，根据节点数量调整）
     #   - "24000-24200:24000-24200"
     #
-    # 支持的运行模式（在 config.yaml 中配置）：
+    # 支持的运行模式（通过环境变量或数据库运行时配置）：
     #   - pool: 单端口代理池，所有节点共享 2323 端口
     #   - multi-port: 多端口模式，每个节点独立端口
     #   - hybrid: 混合模式，同时启用 pool (2323) + multi-port (24000+)
@@ -24,8 +26,6 @@ services:
     #   - 独立节点入口：http://0.0.0.0:24000, 24001, ...（直连特定节点）
     #   - 节点状态在两种入口间共享（黑名单同步）
     #   - 端口冲突时自动重分配到下一个可用端口
-    volumes:
-      # 配置文件需要可写权限以支持 WebUI 设置保存
-      # 如遇权限问题，请在宿主机执行: chmod 666 config.yaml nodes.txt
-      - ./config.yaml:/etc/easy-proxies/config.yaml
-      - ./nodes.txt:/etc/easy-proxies/nodes.txt
+    # 可选：如需文件方式引导节点，可挂载 nodes.txt 并设置 NODES_FILE=/var/lib/easy-proxies/nodes.txt
+    # volumes:
+    #   - ./nodes.txt:/var/lib/easy-proxies/nodes.txt

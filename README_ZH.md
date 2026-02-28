@@ -39,7 +39,7 @@
 
 ### 部署
 - **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
-- **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点与运行时状态可持久化
+- **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点、订阅、运行时配置与状态可持久化
 - **环境变量配置**: 支持 `DB_DRIVER`、`DB_DSN`、`DATABASE_URL` 等
 - **多架构支持**: Docker 镜像同时支持 AMD64 和 ARM64
 - **密码保护**: WebUI 支持密码认证，安全的会话管理
@@ -48,14 +48,22 @@
 
 ### 1. 配置
 
-复制示例配置文件：
+`config.yaml` 已不再必需。使用环境变量（或 `.env`）作为唯一配置来源。
 
-```bash
-cp config.example.yaml config.yaml
-cp nodes.example nodes.txt
+仅环境变量启动示例（`.env`）：
+
+```env
+DB_DRIVER=postgres
+DATABASE_URL=postgres://user:pass@host:5432/dbname?sslmode=require
+DB_AUTO_MIGRATE=true
+
+MANAGEMENT_LISTEN=0.0.0.0:9090
+LISTENER_ADDRESS=0.0.0.0
+LISTENER_PORT=2323
+LISTENER_USERNAME=username
+LISTENER_PASSWORD=password
+SUBSCRIPTION_REFRESH_ENABLED=true
 ```
-
-编辑 `config.yaml` 配置监听地址和认证信息，编辑 `nodes.txt` 添加代理节点。
 
 ### 2. 运行
 
@@ -75,11 +83,11 @@ docker compose up -d
 
 ```bash
 # 推荐：直接使用脚本（默认包含 with_quic 等完整标签）
-./run.sh --config config.yaml
+./run.sh
 
 # 或手动构建后运行
 go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o easy-proxies ./cmd/easy_proxies
-./easy-proxies --config config.yaml
+./easy-proxies
 ```
 
 ## 配置说明
@@ -287,10 +295,10 @@ subscriptions:
 
 **方式 2: 使用节点文件**
 
-在 `config.yaml` 中指定：
+通过环境变量指定：
 
-```yaml
-nodes_file: nodes.txt
+```env
+NODES_FILE=nodes.txt
 ```
 
 `nodes.txt` 每行一个节点 URI：
@@ -388,7 +396,7 @@ hy2://password@server:port?sni=example.com&insecure=0&obfs=salamander&obfs-passw
 | 外部 IP 地址 | 导出节点时使用的 IP 地址（替换 `0.0.0.0`） |
 | 探测目标 | 健康检查目标地址（格式：`host:port`） |
 
-修改后立即保存到 `config.yaml`，无需重启即可生效。
+启用数据库存储后，修改会立即保存到数据库，无需重启即可生效。
 
 ### 节点管理
 
@@ -519,7 +527,9 @@ subscription_refresh:
 Render 运行环境可能会重建容器，建议启用 `storage.driver + storage.dsn`。启用后会持久化：
 
 - 配置节点（`/api/nodes/config`）
+- 订阅列表（`/api/subscriptions`）
 - 管理设置（`external_ip`、`probe_target`、`skip_cert_verify`）
+- 运行参数（模式、监听、代理池、刷新策略、GeoIP 等）
 - 运行时状态（失败计数、黑名单状态、探测可用性）
 
 仓库已提供 Render Blueprint：`render.yaml`。
@@ -555,12 +565,11 @@ services:
     container_name: easy-proxies
     restart: unless-stopped
     network_mode: host
-    volumes:
-      - ./config.yaml:/etc/easy-proxies/config.yaml
-      - ./nodes.txt:/etc/easy-proxies/nodes.txt
+    env_file:
+      - ./.env
 ```
 
-> **注意**: 配置文件需要可写权限以支持 WebUI 设置保存。如遇权限问题，请执行 `chmod 666 config.yaml nodes.txt`
+> **注意**: 如需文件方式引导节点，可挂载 `nodes.txt` 并设置 `NODES_FILE`。
 
 > **优点**: 容器直接使用主机网络，所有端口自动对外开放。端口自动重分配功能可完美工作。
 
@@ -575,13 +584,12 @@ services:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
     container_name: easy-proxies
     restart: unless-stopped
+    env_file:
+      - ./.env
     ports:
       - "2323:2323"       # 节点池/混合模式入口
       - "9091:9091"       # Web 监控面板
       - "24000-24200:24000-24200"  # 多端口/混合模式
-    volumes:
-      - ./config.yaml:/etc/easy-proxies/config.yaml
-      - ./nodes.txt:/etc/easy-proxies/nodes.txt
 ```
 
 > **注意**: 多端口和混合模式需要映射足够的端口范围，建议预留一些缓冲端口用于自动重分配。

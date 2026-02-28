@@ -726,11 +726,52 @@ func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget stri
 	return m.cfg.SaveSettings()
 }
 
+// SaveSubscriptions persists subscription URLs to configured backend.
+func (m *Manager) SaveSubscriptions(ctx context.Context, subscriptions []string) error {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+
+	normalized := normalizeSubscriptionList(subscriptions)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.cfg == nil {
+		return errConfigUnavailable
+	}
+
+	m.cfg.Subscriptions = normalized
+	if m.store != nil {
+		return m.store.SaveSubscriptions(ctx, normalized)
+	}
+	return m.cfg.SaveSubscriptions()
+}
+
 func (m *Manager) persistNodesLocked(ctx context.Context) error {
 	if m.store != nil {
 		return m.store.SaveNodes(ctx, m.cfg.Nodes)
 	}
 	return m.cfg.Save()
+}
+
+func normalizeSubscriptionList(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 // --- Helper functions ---

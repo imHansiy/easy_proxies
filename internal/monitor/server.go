@@ -833,7 +833,7 @@ func (s *Server) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.cfgSrc.Subscriptions = append(s.cfgSrc.Subscriptions, subURL)
-		if err := s.cfgSrc.SaveSubscriptions(); err != nil {
+		if err := s.persistSubscriptionsLocked(r.Context()); err != nil {
 			s.cfgSrc.Subscriptions = s.cfgSrc.Subscriptions[:len(s.cfgSrc.Subscriptions)-1]
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
@@ -963,7 +963,7 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 		}
 		backup := append([]string(nil), s.cfgSrc.Subscriptions...)
 		s.cfgSrc.Subscriptions[idx] = newURL
-		if err := s.cfgSrc.SaveSubscriptions(); err != nil {
+		if err := s.persistSubscriptionsLocked(r.Context()); err != nil {
 			s.cfgSrc.Subscriptions = backup
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
@@ -978,7 +978,7 @@ func (s *Server) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) 
 	case http.MethodDelete:
 		backup := append([]string(nil), s.cfgSrc.Subscriptions...)
 		s.cfgSrc.Subscriptions = append(s.cfgSrc.Subscriptions[:idx], s.cfgSrc.Subscriptions[idx+1:]...)
-		if err := s.cfgSrc.SaveSubscriptions(); err != nil {
+		if err := s.persistSubscriptionsLocked(r.Context()); err != nil {
 			s.cfgSrc.Subscriptions = backup
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": fmt.Sprintf("保存订阅失败: %v", err)})
@@ -1027,6 +1027,21 @@ func validateSubscriptionURL(raw string) error {
 		return errors.New("订阅链接缺少主机名")
 	}
 	return nil
+}
+
+func (s *Server) persistSubscriptionsLocked(ctx context.Context) error {
+	if s.cfgSrc == nil {
+		return errors.New("配置存储未初始化")
+	}
+
+	if saver, ok := s.nodeMgr.(interface {
+		SaveSubscriptions(ctx context.Context, subscriptions []string) error
+	}); ok {
+		subs := append([]string(nil), s.cfgSrc.Subscriptions...)
+		return saver.SaveSubscriptions(ctx, subs)
+	}
+
+	return s.cfgSrc.SaveSubscriptions()
 }
 
 // nodePayload is the JSON request body for node CRUD operations.

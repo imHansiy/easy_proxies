@@ -14,6 +14,21 @@ type Settings struct {
 	SkipCertVerify bool
 }
 
+// RuntimeConfig stores application runtime configuration except DB connection settings.
+type RuntimeConfig struct {
+	Mode                string
+	Listener            config.ListenerConfig
+	MultiPort           config.MultiPortConfig
+	Pool                config.PoolConfig
+	ManagementEnabled   *bool
+	ManagementListen    string
+	ManagementPassword  string
+	SubscriptionRefresh config.SubscriptionRefreshConfig
+	GeoIP               config.GeoIPConfig
+	NodesFile           string
+	LogLevel            string
+}
+
 // NodeRuntimeState stores runtime health and activity state per node tag.
 type NodeRuntimeState struct {
 	Tag              string
@@ -44,6 +59,12 @@ type Store interface {
 
 	LoadNodes(ctx context.Context) ([]config.NodeConfig, error)
 	SaveNodes(ctx context.Context, nodes []config.NodeConfig) error
+
+	LoadSubscriptions(ctx context.Context) ([]string, error)
+	SaveSubscriptions(ctx context.Context, subscriptions []string) error
+
+	LoadRuntimeConfig(ctx context.Context) (RuntimeConfig, bool, error)
+	SaveRuntimeConfig(ctx context.Context, runtime RuntimeConfig) error
 
 	LoadSettings(ctx context.Context) (Settings, bool, error)
 	SaveSettings(ctx context.Context, settings Settings) error
