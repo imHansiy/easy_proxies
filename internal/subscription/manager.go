@@ -105,18 +105,22 @@ func New(cfg *config.Config, boxMgr *boxmgr.Manager, opts ...Option) *Manager {
 
 // Start begins the periodic refresh loop.
 func (m *Manager) Start() {
-	if !m.baseCfg.SubscriptionRefresh.Enabled {
-		m.logger.Infof("subscription refresh disabled")
-		return
-	}
-
 	interval := m.baseCfg.SubscriptionRefresh.Interval
+	if interval <= 0 {
+		interval = 1 * time.Hour
+	}
+	autoEnabled := m.baseCfg.SubscriptionRefresh.Enabled
+	if !autoEnabled {
+		m.logger.Infof("subscription auto refresh disabled, manual refresh remains available")
+	}
 	if len(m.baseCfg.Subscriptions) == 0 {
 		m.logger.Infof("no subscriptions configured, refresh loop started and waiting for subscriptions")
 	}
-	m.logger.Infof("starting subscription refresh, interval: %s", interval)
+	if autoEnabled {
+		m.logger.Infof("starting subscription auto refresh, interval: %s", interval)
+	}
 
-	go m.refreshLoop(interval)
+	go m.refreshLoop(interval, autoEnabled)
 }
 
 // Stop stops the periodic refresh.
@@ -207,31 +211,44 @@ func (m *Manager) Status() monitor.SubscriptionStatus {
 	return status
 }
 
-// refreshLoop runs the periodic refresh.
-func (m *Manager) refreshLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+// refreshLoop runs auto refresh (if enabled) and always supports manual refresh.
+func (m *Manager) refreshLoop(interval time.Duration, autoEnabled bool) {
+	var ticker *time.Ticker
+	var tickerC <-chan time.Time
+	if autoEnabled {
+		ticker = time.NewTicker(interval)
+		tickerC = ticker.C
+		defer ticker.Stop()
+	}
 
-	// Update next refresh time
 	m.mu.Lock()
-	m.status.NextRefresh = time.Now().Add(interval)
+	if autoEnabled {
+		m.status.NextRefresh = time.Now().Add(interval)
+	} else {
+		m.status.NextRefresh = time.Time{}
+	}
 	m.mu.Unlock()
 
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-tickerC:
 			m.doRefresh()
 			m.mu.Lock()
 			m.status.NextRefresh = time.Now().Add(interval)
 			m.mu.Unlock()
 		case <-m.manualRefresh:
 			m.doRefresh()
-			// Reset ticker after manual refresh
-			ticker.Reset(interval)
 			m.mu.Lock()
-			m.status.NextRefresh = time.Now().Add(interval)
+			if autoEnabled {
+				if ticker != nil {
+					ticker.Reset(interval)
+				}
+				m.status.NextRefresh = time.Now().Add(interval)
+			} else {
+				m.status.NextRefresh = time.Time{}
+			}
 			m.mu.Unlock()
 		}
 	}

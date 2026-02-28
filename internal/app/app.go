@@ -142,29 +142,27 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		server.SetConfig(cfg)
 	}
 
-	// Create and start SubscriptionManager if enabled
+	// Create and start SubscriptionManager (supports manual refresh even when auto refresh is disabled)
 	var subMgr *subscription.Manager
-	if cfg.SubscriptionRefresh.Enabled {
-		subMgr = subscription.New(cfg, boxMgr)
-		subMgr.Start()
-		defer subMgr.Stop()
+	subMgr = subscription.New(cfg, boxMgr)
+	subMgr.Start()
+	defer subMgr.Stop()
 
-		// Wire up subscription manager to monitor server for API endpoints
-		if server := boxMgr.MonitorServer(); server != nil {
-			server.SetSubscriptionRefresher(subMgr)
-		}
+	// Wire up subscription manager to monitor server for API endpoints
+	if server := boxMgr.MonitorServer(); server != nil {
+		server.SetSubscriptionRefresher(subMgr)
+	}
 
-		needsSourceRefBootstrap := len(cfg.Subscriptions) > 0
-		for _, n := range cfg.Nodes {
-			if n.Source == config.NodeSourceSubscription && strings.TrimSpace(n.SourceRef) == "" {
-				needsSourceRefBootstrap = true
-				break
-			}
+	needsSourceRefBootstrap := len(cfg.Subscriptions) > 0
+	for _, n := range cfg.Nodes {
+		if n.Source == config.NodeSourceSubscription && strings.TrimSpace(n.SourceRef) == "" {
+			needsSourceRefBootstrap = true
+			break
 		}
-		if needsSourceRefBootstrap {
-			if err := subMgr.RefreshNow(); err != nil {
-				log.Printf("WARN: initial subscription refresh failed: %v", err)
-			}
+	}
+	if needsSourceRefBootstrap {
+		if err := subMgr.RefreshNow(); err != nil {
+			log.Printf("WARN: initial subscription refresh failed: %v", err)
 		}
 	}
 
