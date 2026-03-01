@@ -345,6 +345,124 @@ func (m *Manager) MonitorServer() *monitor.Server {
 	return m.monitorServer
 }
 
+// EnrichAndPersistNodeRegions probes unresolved nodes and persists resolved regions to storage.
+// It is best-effort: probe failures do not abort the process.
+func (m *Manager) EnrichAndPersistNodeRegions(ctx context.Context) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	m.mu.RLock()
+	monitorMgr := m.monitorMgr
+	m.mu.RUnlock()
+	if monitorMgr == nil {
+		return 0, nil
+	}
+
+	// Trigger probe for nodes without resolved region. Probe success path in pool
+	// may resolve location via Cloudflare trace and update monitor metadata.
+	unresolvedTags := make([]string, 0)
+	for _, snap := range monitorMgr.Snapshot() {
+		region := strings.ToLower(strings.TrimSpace(snap.Region))
+		if region == "" || region == "other" {
+			unresolvedTags = append(unresolvedTags, snap.Tag)
+		}
+	}
+
+	if len(unresolvedTags) > 0 {
+		const maxConcurrentProbes = 6
+		sem := make(chan struct{}, maxConcurrentProbes)
+		var wg sync.WaitGroup
+		for _, tag := range unresolvedTags {
+			tag := tag
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				probeCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+				_, _ = monitorMgr.Probe(probeCtx, tag)
+				cancel()
+			}()
+		}
+		wg.Wait()
+	}
+
+	// Give async location resolver a brief window to finish.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		allResolved := true
+		for _, snap := range monitorMgr.Snapshot() {
+			region := strings.ToLower(strings.TrimSpace(snap.Region))
+			if region == "" || region == "other" {
+				allResolved = false
+				break
+			}
+		}
+		if allResolved {
+			break
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+
+	// Merge monitor region/country back into config nodes and persist.
+	snapshots := monitorMgr.Snapshot()
+	byURI := make(map[string]monitor.Snapshot, len(snapshots))
+	for _, snap := range snapshots {
+		uri := strings.TrimSpace(snap.URI)
+		if uri == "" {
+			continue
+		}
+		region := strings.ToLower(strings.TrimSpace(snap.Region))
+		if region == "" || region == "other" {
+			if _, exists := byURI[uri]; !exists {
+				byURI[uri] = snap
+			}
+			continue
+		}
+		byURI[uri] = snap
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cfg == nil {
+		return 0, errConfigUnavailable
+	}
+
+	changed := 0
+	for i := range m.cfg.Nodes {
+		node := &m.cfg.Nodes[i]
+		snap, ok := byURI[strings.TrimSpace(node.URI)]
+		if !ok {
+			continue
+		}
+		region := strings.ToLower(strings.TrimSpace(snap.Region))
+		if region == "" || region == "other" {
+			continue
+		}
+		country := strings.TrimSpace(snap.Country)
+		if country == "" {
+			country = strings.ToUpper(region)
+		}
+
+		if node.Region == region && node.Country == country {
+			continue
+		}
+		node.Region = region
+		node.Country = country
+		changed++
+	}
+
+	if changed == 0 {
+		return 0, nil
+	}
+	if err := m.persistNodesLocked(ctx); err != nil {
+		return 0, fmt.Errorf("save nodes with enriched regions: %w", err)
+	}
+	return changed, nil
+}
+
 // createBox builds a sing-box instance from config.
 func (m *Manager) createBox(ctx context.Context, cfg *config.Config) (*box.Box, error) {
 	if cfg == nil {
@@ -717,7 +835,7 @@ func (m *Manager) CurrentPortMap() map[string]uint16 {
 }
 
 // SaveSettings persists runtime settings to the configured backend.
-func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget string, skipCertVerify bool) error {
+func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget string, skipCertVerify bool, proxyUsername, proxyPassword string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -728,12 +846,17 @@ func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget stri
 	m.cfg.ExternalIP = externalIP
 	m.cfg.Management.ProbeTarget = probeTarget
 	m.cfg.SkipCertVerify = skipCertVerify
+	m.cfg.Listener.Username = proxyUsername
+	m.cfg.Listener.Password = proxyPassword
 
 	if m.store != nil {
 		return m.store.SaveSettings(ctx, storage.Settings{
 			ExternalIP:     externalIP,
 			ProbeTarget:    probeTarget,
 			SkipCertVerify: skipCertVerify,
+			ProxyUsername:  proxyUsername,
+			ProxyPassword:  proxyPassword,
+			ProxyAuthSet:   true,
 		})
 	}
 	return m.cfg.SaveSettings()

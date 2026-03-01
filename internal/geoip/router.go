@@ -27,12 +27,12 @@ type PoolDialer interface {
 
 // Router handles HTTP proxy requests with path-based region routing
 type Router struct {
-	cfg     RouterConfig
-	pools   map[string]PoolDialer // region -> dialer
-	global  PoolDialer            // default pool for requests without region path
-	server  *http.Server
-	mu      sync.RWMutex
-	logger  *log.Logger
+	cfg    RouterConfig
+	pools  map[string]PoolDialer // region -> dialer
+	global PoolDialer            // default pool for requests without region path
+	server *http.Server
+	mu     sync.RWMutex
+	logger *log.Logger
 }
 
 // NewRouter creates a new GeoIP router
@@ -72,7 +72,11 @@ func (r *Router) Start(ctx context.Context) error {
 
 	go func() {
 		r.logger.Printf("🌐 GeoIP Router started on %s", addr)
-		r.logger.Println("   Routes: /jp, /kr, /us, /hk, /tw, /other (default: all nodes)")
+		routes := make([]string, 0, len(AllRegions()))
+		for _, region := range AllRegions() {
+			routes = append(routes, "/"+region)
+		}
+		r.logger.Printf("   Routes: %s (default: all nodes)", strings.Join(routes, ", "))
 		if err := r.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			r.logger.Printf("GeoIP router error: %v", err)
 		}

@@ -36,7 +36,7 @@ type NodeInfo struct {
 	Mode          string `json:"mode"`
 	ListenAddress string `json:"listen_address,omitempty"`
 	Port          uint16 `json:"port,omitempty"`
-	Region        string `json:"region,omitempty"`  // GeoIP region code: "jp", "kr", "us", "hk", "tw", "other"
+	Region        string `json:"region,omitempty"`  // GeoIP region code: "jp", "kr", "us", "hk", "tw", "sg", "de", "gb", "ca", "au", "other"
 	Country       string `json:"country,omitempty"` // Full country name from GeoIP
 }
 
@@ -122,6 +122,17 @@ type entry struct {
 	available        bool
 	domainBlacklist  map[string]time.Time
 	mu               sync.RWMutex
+}
+
+func (e *entry) updateLocation(region, country string) {
+	e.mu.Lock()
+	if strings.TrimSpace(region) != "" {
+		e.info.Region = strings.ToLower(strings.TrimSpace(region))
+	}
+	if strings.TrimSpace(country) != "" {
+		e.info.Country = strings.TrimSpace(country)
+	}
+	e.mu.Unlock()
 }
 
 // Manager aggregates all node states for the UI/API.
@@ -787,6 +798,14 @@ func (h *EntryHandle) SetRelease(fn func()) {
 		return
 	}
 	h.ref.setRelease(fn)
+}
+
+// UpdateLocation updates node region/country metadata for UI display.
+func (h *EntryHandle) UpdateLocation(region, country string) {
+	if h == nil || h.ref == nil {
+		return
+	}
+	h.ref.updateLocation(region, country)
 }
 
 // MarkInitialCheckDone marks the initial health check as completed.

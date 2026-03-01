@@ -1275,6 +1275,31 @@
         <div class="stat-value" id="regionTW">0</div>
         <div class="stat-trend" id="regionTWHealthy">0 健康</div>
       </div>
+      <div class="stat-card region-card" data-region="sg">
+        <div class="stat-label">🇸🇬 新加坡</div>
+        <div class="stat-value" id="regionSG">0</div>
+        <div class="stat-trend" id="regionSGHealthy">0 健康</div>
+      </div>
+      <div class="stat-card region-card" data-region="de">
+        <div class="stat-label">🇩🇪 德国</div>
+        <div class="stat-value" id="regionDE">0</div>
+        <div class="stat-trend" id="regionDEHealthy">0 健康</div>
+      </div>
+      <div class="stat-card region-card" data-region="gb">
+        <div class="stat-label">🇬🇧 英国</div>
+        <div class="stat-value" id="regionGB">0</div>
+        <div class="stat-trend" id="regionGBHealthy">0 健康</div>
+      </div>
+      <div class="stat-card region-card" data-region="ca">
+        <div class="stat-label">🇨🇦 加拿大</div>
+        <div class="stat-value" id="regionCA">0</div>
+        <div class="stat-trend" id="regionCAHealthy">0 健康</div>
+      </div>
+      <div class="stat-card region-card" data-region="au">
+        <div class="stat-label">🇦🇺 澳大利亚</div>
+        <div class="stat-value" id="regionAU">0</div>
+        <div class="stat-trend" id="regionAUHealthy">0 健康</div>
+      </div>
       <div class="stat-card region-card" data-region="other">
         <div class="stat-label">🌍 其他</div>
         <div class="stat-value" id="regionOther">0</div>
@@ -1291,6 +1316,11 @@
       <button class="btn btn-sm region-btn" data-region="us" onclick="filterByRegion('us')">🇺🇸 US</button>
       <button class="btn btn-sm region-btn" data-region="hk" onclick="filterByRegion('hk')">🇭🇰 HK</button>
       <button class="btn btn-sm region-btn" data-region="tw" onclick="filterByRegion('tw')">🇹🇼 TW</button>
+      <button class="btn btn-sm region-btn" data-region="sg" onclick="filterByRegion('sg')">🇸🇬 SG</button>
+      <button class="btn btn-sm region-btn" data-region="de" onclick="filterByRegion('de')">🇩🇪 DE</button>
+      <button class="btn btn-sm region-btn" data-region="gb" onclick="filterByRegion('gb')">🇬🇧 GB</button>
+      <button class="btn btn-sm region-btn" data-region="ca" onclick="filterByRegion('ca')">🇨🇦 CA</button>
+      <button class="btn btn-sm region-btn" data-region="au" onclick="filterByRegion('au')">🇦🇺 AU</button>
       <button class="btn btn-sm region-btn" data-region="other" onclick="filterByRegion('other')">🌍 Other</button>
     </div>
 
@@ -1467,6 +1497,16 @@
           <label class="form-label" for="settingProbeTarget">探测目标</label>
           <input type="text" id="settingProbeTarget" class="form-input" placeholder="例如：www.apple.com:80" />
           <p class="form-help">健康检查时使用的目标地址，格式：host:port</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingProxyUsername">代理用户名</label>
+          <input type="text" id="settingProxyUsername" class="form-input" placeholder="例如：username" />
+          <p class="form-help">用于代理入口认证，留空表示不启用用户名密码认证</p>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="settingProxyPassword">代理密码</label>
+          <input type="text" id="settingProxyPassword" class="form-input" placeholder="例如：password" />
+          <p class="form-help">修改后需重载配置才会应用到代理入口</p>
         </div>
         <div class="form-group" style="display: flex; align-items: center; gap: 12px;">
           <label class="form-label" for="settingSkipCertVerify" style="margin: 0; flex: 1;">跳过 SSL 证书验证</label>
@@ -1709,12 +1749,13 @@
         regionFilterEl.style.display = 'flex';
 
         // Update each region
-        const regions = ['jp', 'kr', 'us', 'hk', 'tw', 'other'];
+        const regions = ['jp', 'kr', 'us', 'hk', 'tw', 'sg', 'de', 'gb', 'ca', 'au', 'other'];
         regions.forEach(region => {
-          const count = regionStats[region] || 0;
-          const healthy = regionHealthy[region] || 0;
-          const valueEl = document.getElementById('region' + region.toUpperCase());
-          const healthyEl = document.getElementById('region' + region.toUpperCase() + 'Healthy');
+          const count = regionStats[region] ?? regionStats[region.toUpperCase()] ?? 0;
+          const healthy = regionHealthy[region] ?? regionHealthy[region.toUpperCase()] ?? 0;
+          const regionSuffix = region === 'other' ? 'Other' : region.toUpperCase();
+          const valueEl = document.getElementById('region' + regionSuffix);
+          const healthyEl = document.getElementById('region' + regionSuffix + 'Healthy');
           if (valueEl) valueEl.textContent = count;
           if (healthyEl) healthyEl.textContent = healthy + ' 健康';
         });
@@ -1758,6 +1799,11 @@
         'us': '🇺🇸',
         'hk': '🇭🇰',
         'tw': '🇹🇼',
+        'sg': '🇸🇬',
+        'de': '🇩🇪',
+        'gb': '🇬🇧',
+        'ca': '🇨🇦',
+        'au': '🇦🇺',
         'other': '🌍'
       };
       return emojis[region] || '🌍';
@@ -1771,6 +1817,11 @@
         'us': 'US',
         'hk': 'HK',
         'tw': 'TW',
+        'sg': 'SG',
+        'de': 'DE',
+        'gb': 'GB',
+        'ca': 'CA',
+        'au': 'AU',
         'other': 'Other'
       };
       return names[region] || 'Other';
@@ -2262,6 +2313,8 @@
         .then(data => {
           document.getElementById('settingExternalIP').value = data.external_ip || '';
           document.getElementById('settingProbeTarget').value = data.probe_target || '';
+          document.getElementById('settingProxyUsername').value = data.proxy_username || '';
+          document.getElementById('settingProxyPassword').value = data.proxy_password || '';
           document.getElementById('settingSkipCertVerify').checked = data.skip_cert_verify || false;
           document.getElementById('settingsError').classList.remove('show');
           document.getElementById('settingsOverlay').classList.add('show');
@@ -2284,6 +2337,8 @@
       const payload = {
         external_ip: document.getElementById('settingExternalIP').value.trim(),
         probe_target: document.getElementById('settingProbeTarget').value.trim(),
+        proxy_username: document.getElementById('settingProxyUsername').value.trim(),
+        proxy_password: document.getElementById('settingProxyPassword').value.trim(),
         skip_cert_verify: document.getElementById('settingSkipCertVerify').checked
       };
 
@@ -2297,7 +2352,7 @@
         const data = await res.json();
         if (res.ok) {
           if (data.need_reload) {
-            showToast('设置已保存，SSL 设置需重载生效', 'success');
+            showToast('设置已保存，代理认证/SSL 设置需重载生效', 'success');
           } else {
             showToast('设置保存成功', 'success');
           }

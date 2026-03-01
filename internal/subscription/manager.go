@@ -398,6 +398,18 @@ func (m *Manager) doRefreshWithTarget(targetURL, trigger string) error {
 		return err
 	}
 
+	enrichedCount := 0
+	if changed, enrichErr := m.boxMgr.EnrichAndPersistNodeRegions(m.ctx); enrichErr != nil {
+		m.logger.Warnf("region enrichment failed after refresh: %v", enrichErr)
+		m.appendLog(targetURL, trigger, "warn", "region enrichment failed: "+enrichErr.Error(), len(nodes), start)
+	} else if changed > 0 {
+		enrichedCount = changed
+		if latestNodes, listErr := m.boxMgr.ListConfigNodes(m.ctx); listErr == nil {
+			newCfg.Nodes = latestNodes
+		}
+		m.logger.Infof("region enrichment updated %d nodes", enrichedCount)
+	}
+
 	m.mu.Lock()
 	m.status.LastRefresh = time.Now()
 	m.status.NodeCount = len(nodes)
@@ -407,7 +419,11 @@ func (m *Manager) doRefreshWithTarget(targetURL, trigger string) error {
 	}
 	m.mu.Unlock()
 
-	m.appendLog(targetURL, trigger, "info", "refresh success", len(nodes), start)
+	if enrichedCount > 0 {
+		m.appendLog(targetURL, trigger, "info", fmt.Sprintf("refresh success, region enriched for %d nodes", enrichedCount), len(nodes), start)
+	} else {
+		m.appendLog(targetURL, trigger, "info", "refresh success", len(nodes), start)
+	}
 	m.logger.Infof("subscription refresh completed, %d nodes active", len(nodes))
 	return nil
 }
@@ -549,6 +565,7 @@ func (m *Manager) fetchAllSubscriptions(trigger, onlyURL string) ([]config.NodeC
 			nodes[idx].Source = config.NodeSourceSubscription
 			nodes[idx].SourceRef = subURL
 		}
+		nodes = m.mergeNodeMetadata(subURL, nodes)
 		if len(nodes) == 0 {
 			m.appendLog(subURL, trigger, "warn", "subscription contains no supported nodes", 0, fetchStart)
 		} else {
@@ -589,6 +606,57 @@ func (m *Manager) cachedNodesForSubscription(subURL string) []config.NodeConfig 
 		}
 	}
 	return out
+}
+
+func (m *Manager) mergeNodeMetadata(subURL string, nodes []config.NodeConfig) []config.NodeConfig {
+	if len(nodes) == 0 || m.baseCfg == nil {
+		return nodes
+	}
+
+	bySubAndURI := make(map[string]config.NodeConfig)
+	byURI := make(map[string]config.NodeConfig)
+	for _, existing := range m.baseCfg.Nodes {
+		if existing.Source != config.NodeSourceSubscription {
+			continue
+		}
+		uriKey := strings.TrimSpace(existing.URI)
+		if uriKey == "" {
+			continue
+		}
+		subKey := strings.TrimSpace(existing.SourceRef)
+		if subKey != "" {
+			bySubAndURI[subKey+"|"+uriKey] = existing
+		}
+		if _, ok := byURI[uriKey]; !ok {
+			byURI[uriKey] = existing
+		}
+	}
+
+	for idx := range nodes {
+		uriKey := strings.TrimSpace(nodes[idx].URI)
+		if uriKey == "" {
+			continue
+		}
+		if existing, ok := bySubAndURI[strings.TrimSpace(subURL)+"|"+uriKey]; ok {
+			if strings.TrimSpace(nodes[idx].Region) == "" {
+				nodes[idx].Region = existing.Region
+			}
+			if strings.TrimSpace(nodes[idx].Country) == "" {
+				nodes[idx].Country = existing.Country
+			}
+			continue
+		}
+		if existing, ok := byURI[uriKey]; ok {
+			if strings.TrimSpace(nodes[idx].Region) == "" {
+				nodes[idx].Region = existing.Region
+			}
+			if strings.TrimSpace(nodes[idx].Country) == "" {
+				nodes[idx].Country = existing.Country
+			}
+		}
+	}
+
+	return nodes
 }
 
 func nodesFromSource(nodes []config.NodeConfig, source config.NodeSource) []config.NodeConfig {

@@ -12,6 +12,9 @@ type Settings struct {
 	ExternalIP     string
 	ProbeTarget    string
 	SkipCertVerify bool
+	ProxyUsername  string
+	ProxyPassword  string
+	ProxyAuthSet   bool
 }
 
 // RuntimeConfig stores application runtime configuration except DB connection settings.

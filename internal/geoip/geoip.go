@@ -24,6 +24,11 @@ const (
 	RegionUS    = "us"
 	RegionHK    = "hk"
 	RegionTW    = "tw"
+	RegionSG    = "sg"
+	RegionDE    = "de"
+	RegionGB    = "gb"
+	RegionCA    = "ca"
+	RegionAU    = "au"
 	RegionOther = "other"
 )
 
@@ -34,7 +39,7 @@ const (
 
 // RegionInfo contains region details
 type RegionInfo struct {
-	Code    string // "jp", "kr", "us", "hk", "tw", "other"
+	Code    string // "jp", "kr", "us", "hk", "tw", "sg", "de", "gb", "ca", "au", "other"
 	Country string // Full country name
 	ISOCode string // ISO country code
 }
@@ -564,14 +569,29 @@ func isoCodeToRegion(isoCode string) string {
 		return RegionHK
 	case "TW":
 		return RegionTW
+	case "SG":
+		return RegionSG
+	case "DE":
+		return RegionDE
+	case "GB", "UK":
+		return RegionGB
+	case "CA":
+		return RegionCA
+	case "AU":
+		return RegionAU
 	default:
 		return RegionOther
 	}
 }
 
+// RegionFromISO maps ISO country code to configured region code.
+func RegionFromISO(isoCode string) string {
+	return isoCodeToRegion(isoCode)
+}
+
 // AllRegions returns all supported region codes
 func AllRegions() []string {
-	return []string{RegionJP, RegionKR, RegionUS, RegionHK, RegionTW, RegionOther}
+	return []string{RegionJP, RegionKR, RegionUS, RegionHK, RegionTW, RegionSG, RegionDE, RegionGB, RegionCA, RegionAU, RegionOther}
 }
 
 // RegionName returns the display name for a region code
@@ -587,6 +607,16 @@ func RegionName(code string) string {
 		return "Hong Kong"
 	case RegionTW:
 		return "Taiwan"
+	case RegionSG:
+		return "Singapore"
+	case RegionDE:
+		return "Germany"
+	case RegionGB:
+		return "United Kingdom"
+	case RegionCA:
+		return "Canada"
+	case RegionAU:
+		return "Australia"
 	case RegionOther:
 		return "Other"
 	default:
@@ -607,6 +637,16 @@ func RegionEmoji(code string) string {
 		return "🇭🇰"
 	case RegionTW:
 		return "🇹🇼"
+	case RegionSG:
+		return "🇸🇬"
+	case RegionDE:
+		return "🇩🇪"
+	case RegionGB:
+		return "🇬🇧"
+	case RegionCA:
+		return "🇨🇦"
+	case RegionAU:
+		return "🇦🇺"
 	case RegionOther:
 		return "🌍"
 	default:

@@ -56,6 +56,10 @@ func Run(ctx context.Context, cfg *config.Config) error {
 				cfg.Management.ProbeTarget = settings.ProbeTarget
 			}
 			cfg.SkipCertVerify = settings.SkipCertVerify
+			if settings.ProxyAuthSet {
+				cfg.Listener.Username = settings.ProxyUsername
+				cfg.Listener.Password = settings.ProxyPassword
+			}
 		}
 
 		subscriptions, err := gormStore.LoadSubscriptions(ctx)
@@ -90,6 +94,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 				ExternalIP:     cfg.ExternalIP,
 				ProbeTarget:    cfg.Management.ProbeTarget,
 				SkipCertVerify: cfg.SkipCertVerify,
+				ProxyUsername:  cfg.Listener.Username,
+				ProxyPassword:  cfg.Listener.Password,
+				ProxyAuthSet:   strings.TrimSpace(cfg.Listener.Username) != "" || strings.TrimSpace(cfg.Listener.Password) != "",
 			}); err != nil {
 				log.Printf("WARN: seed db settings failed: %v", err)
 			}

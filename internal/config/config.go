@@ -162,6 +162,8 @@ type NodeConfig struct {
 	Port      uint16     `yaml:"port,omitempty" json:"port,omitempty"`
 	Username  string     `yaml:"username,omitempty" json:"username,omitempty"`
 	Password  string     `yaml:"password,omitempty" json:"password,omitempty"`
+	Region    string     `yaml:"region,omitempty" json:"region,omitempty"`
+	Country   string     `yaml:"country,omitempty" json:"country,omitempty"`
 	Source    NodeSource `yaml:"-" json:"source,omitempty"`     // Runtime only, not persisted
 	SourceRef string     `yaml:"-" json:"source_ref,omitempty"` // Subscription URL or source identifier
 }
@@ -1074,7 +1076,7 @@ func (c *Config) Save() error {
 	return c.SaveNodes()
 }
 
-// SaveSettings persists only config settings (external_ip, probe_target, skip_cert_verify)
+// SaveSettings persists only runtime settings (external_ip, probe_target, skip_cert_verify, listener auth)
 // without touching nodes.txt. Use this for settings API updates.
 func (c *Config) SaveSettings() error {
 	if c == nil {
@@ -1096,6 +1098,8 @@ func (c *Config) SaveSettings() error {
 	saveCfg.ExternalIP = c.ExternalIP
 	saveCfg.Management.ProbeTarget = c.Management.ProbeTarget
 	saveCfg.SkipCertVerify = c.SkipCertVerify
+	saveCfg.Listener.Username = c.Listener.Username
+	saveCfg.Listener.Password = c.Listener.Password
 
 	newData, err := yaml.Marshal(&saveCfg)
 	if err != nil {

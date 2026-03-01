@@ -27,6 +27,8 @@ type nodeModel struct {
 	Port      uint16    `gorm:"not null;default:0"`
 	Username  string    `gorm:"type:text;not null;default:''"`
 	Password  string    `gorm:"type:text;not null;default:''"`
+	Region    string    `gorm:"type:text;not null;default:''"`
+	Country   string    `gorm:"type:text;not null;default:''"`
 	Source    string    `gorm:"type:text;not null;default:''"`
 	SourceRef string    `gorm:"type:text;not null;default:''"`
 	UpdatedAt time.Time `gorm:"not null"`
@@ -55,6 +57,9 @@ type settingsModel struct {
 	ExternalIP     string    `gorm:"type:text;not null;default:''"`
 	ProbeTarget    string    `gorm:"type:text;not null;default:''"`
 	SkipCertVerify bool      `gorm:"not null;default:false"`
+	ProxyUsername  string    `gorm:"type:text;not null;default:''"`
+	ProxyPassword  string    `gorm:"type:text;not null;default:''"`
+	ProxyAuthSet   bool      `gorm:"not null;default:false"`
 	UpdatedAt      time.Time `gorm:"not null"`
 }
 
@@ -149,6 +154,8 @@ func (s *GORMStore) LoadNodes(ctx context.Context) ([]config.NodeConfig, error) 
 			Port:      r.Port,
 			Username:  r.Username,
 			Password:  r.Password,
+			Region:    r.Region,
+			Country:   r.Country,
 			Source:    config.NodeSource(r.Source),
 			SourceRef: r.SourceRef,
 		})
@@ -169,6 +176,8 @@ func (s *GORMStore) SaveNodes(ctx context.Context, nodes []config.NodeConfig) er
 				Port:      n.Port,
 				Username:  n.Username,
 				Password:  n.Password,
+				Region:    n.Region,
+				Country:   n.Country,
 				Source:    string(n.Source),
 				SourceRef: n.SourceRef,
 				UpdatedAt: time.Now(),
@@ -261,6 +270,9 @@ func (s *GORMStore) LoadSettings(ctx context.Context) (Settings, bool, error) {
 		ExternalIP:     row.ExternalIP,
 		ProbeTarget:    row.ProbeTarget,
 		SkipCertVerify: row.SkipCertVerify,
+		ProxyUsername:  row.ProxyUsername,
+		ProxyPassword:  row.ProxyPassword,
+		ProxyAuthSet:   row.ProxyAuthSet,
 	}, true, nil
 }
 
@@ -270,11 +282,14 @@ func (s *GORMStore) SaveSettings(ctx context.Context, settings Settings) error {
 		ExternalIP:     settings.ExternalIP,
 		ProbeTarget:    settings.ProbeTarget,
 		SkipCertVerify: settings.SkipCertVerify,
+		ProxyUsername:  settings.ProxyUsername,
+		ProxyPassword:  settings.ProxyPassword,
+		ProxyAuthSet:   settings.ProxyAuthSet,
 		UpdatedAt:      time.Now(),
 	}
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "id"}},
-		DoUpdates: clause.AssignmentColumns([]string{"external_ip", "probe_target", "skip_cert_verify", "updated_at"}),
+		DoUpdates: clause.AssignmentColumns([]string{"external_ip", "probe_target", "skip_cert_verify", "proxy_username", "proxy_password", "proxy_auth_set", "updated_at"}),
 	}).Create(&row).Error
 }
 

@@ -13,7 +13,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **Subscription Auto-Refresh**: Automatic periodic refresh with WebUI manual trigger (⚠️ causes connection interruption)
 - **Pool Mode**: Automatic failover and load balancing
   - **GeoIP Region Routing** ⭐ (Optional): Access region-specific node pools via URL paths
-    - `/jp` - Japan nodes, `/kr` - Korea nodes, `/us` - US nodes, etc.
+    - `/jp` `/kr` `/us` `/hk` `/tw` `/sg` `/de` `/gb` `/ca` `/au` `/other`
     - Auto-download GeoIP database on first startup
     - Automatic periodic updates (configurable, default 24h)
     - Hot-reload without service interruption
@@ -22,7 +22,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 
 ### Management & Monitoring
 - **Web Dashboard**: Real-time node status, latency probing, one-click export
-- **WebUI Settings**: Modify external_ip and probe_target without editing config files
+- **WebUI Settings**: Modify external_ip, probe_target, and proxy auth without editing config files
 - **Auto Health Check**: Initial check on startup, periodic checks every 5 minutes
 - **Smart Node Filtering**: Auto-hide unavailable nodes, sort by latency
 - **Domain-Level Blacklist**: Track blocked domains per node (e.g. Cloudflare-protected targets), with blacklist APIs and scheduled auto-recheck recovery
@@ -589,7 +589,7 @@ go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o eas
 
 **🌍 GeoIP Features (Pool Mode Only):**
 - ⭐ **Region-Based Pool Routing** (Optional Feature)
-  - Access region-specific node pools via URL paths: `/jp`, `/kr`, `/us`, `/hk`, `/tw`, etc.
+  - Access region-specific node pools via URL paths: `/jp`, `/kr`, `/us`, `/hk`, `/tw`, `/sg`, `/de`, `/gb`, `/ca`, `/au`, `/other`
   - Automatic IP geolocation for all nodes in pool mode
   - Dashboard displays node count by region
 - ⭐ **Automatic GeoIP Database Management**

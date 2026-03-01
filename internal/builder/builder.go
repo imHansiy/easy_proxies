@@ -94,17 +94,34 @@ func Build(cfg *config.Config) (option.Options, error) {
 			meta.Port = cfg.Listener.Port
 		}
 
-		// GeoIP lookup for region classification
-		if geoLookup != nil && geoLookup.IsEnabled() {
-			regionInfo := geoLookup.LookupURI(node.URI)
-			meta.Region = regionInfo.Code
-			meta.Country = regionInfo.Country
-			regionMembers[regionInfo.Code] = append(regionMembers[regionInfo.Code], tag)
-		} else {
-			meta.Region = geoip.RegionOther
-			meta.Country = "Unknown"
-			regionMembers[geoip.RegionOther] = append(regionMembers[geoip.RegionOther], tag)
+		// Region classification priority:
+		// 1) Persisted region/country from DB (if available)
+		// 2) GeoIP by node endpoint
+		// 3) Name/tag heuristic fallback
+		regionCode := normalizeRegionCode(node.Region)
+		country := strings.TrimSpace(node.Country)
+		if country == "" {
+			country = "Unknown"
 		}
+
+		if regionCode == geoip.RegionOther && geoLookup != nil && geoLookup.IsEnabled() {
+			regionInfo := geoLookup.LookupURI(node.URI)
+			regionCode = normalizeRegionCode(regionInfo.Code)
+			if regionInfo.Country != "" {
+				country = regionInfo.Country
+			}
+		}
+		if regionCode == geoip.RegionOther {
+			if inferred := inferRegionFromName(node.Name); inferred != "" {
+				regionCode = normalizeRegionCode(inferred)
+				if country == "" || strings.EqualFold(country, "unknown") {
+					country = strings.ToUpper(regionCode)
+				}
+			}
+		}
+		meta.Region = regionCode
+		meta.Country = country
+		regionMembers[regionCode] = append(regionMembers[regionCode], tag)
 
 		metadata[tag] = meta
 	}
@@ -865,6 +882,90 @@ func parseAddr(value string) (*badoption.Addr, error) {
 	}
 	bad := badoption.Addr(parsed)
 	return &bad, nil
+}
+
+func normalizeRegionCode(region string) string {
+	region = strings.ToLower(strings.TrimSpace(region))
+	switch region {
+	case geoip.RegionJP,
+		geoip.RegionKR,
+		geoip.RegionUS,
+		geoip.RegionHK,
+		geoip.RegionTW,
+		geoip.RegionSG,
+		geoip.RegionDE,
+		geoip.RegionGB,
+		geoip.RegionCA,
+		geoip.RegionAU:
+		return region
+	default:
+		return geoip.RegionOther
+	}
+}
+
+func inferRegionFromName(name string) string {
+	v := strings.ToLower(strings.TrimSpace(name))
+	if v == "" {
+		return ""
+	}
+
+	tokens := strings.FieldsFunc(v, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+	})
+
+	hasExact := func(values ...string) bool {
+		for _, token := range tokens {
+			for _, value := range values {
+				if token == value {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	hasPrefix := func(values ...string) bool {
+		for _, token := range tokens {
+			for _, value := range values {
+				if strings.HasPrefix(token, value) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if strings.Contains(v, "hong kong") || strings.Contains(v, "hongkong") || hasExact("hk") || hasPrefix("hongkong", "hk") {
+		return geoip.RegionHK
+	}
+	if strings.Contains(v, "japan") || strings.Contains(v, "tokyo") || strings.Contains(v, "osaka") || hasExact("jp") || hasPrefix("tokyo", "osaka", "japan", "jp") {
+		return geoip.RegionJP
+	}
+	if strings.Contains(v, "korea") || strings.Contains(v, "incheon") || strings.Contains(v, "seoul") || hasExact("kr") || hasPrefix("korea", "incheon", "seoul", "kr") {
+		return geoip.RegionKR
+	}
+	if strings.Contains(v, "taiwan") || strings.Contains(v, "taipei") || hasExact("tw") || hasPrefix("taiwan", "taipei", "tw") {
+		return geoip.RegionTW
+	}
+	if strings.Contains(v, "singapore") || strings.Contains(v, "新加坡") || hasExact("sg") || hasPrefix("singapore", "sg") {
+		return geoip.RegionSG
+	}
+	if strings.Contains(v, "germany") || strings.Contains(v, "deutschland") || strings.Contains(v, "德国") || hasExact("de") || hasPrefix("germany", "de") {
+		return geoip.RegionDE
+	}
+	if strings.Contains(v, "united kingdom") || strings.Contains(v, "britain") || strings.Contains(v, "london") || strings.Contains(v, "uk") || strings.Contains(v, "英国") || hasExact("gb", "uk") || hasPrefix("britain", "london", "gb", "uk") {
+		return geoip.RegionGB
+	}
+	if strings.Contains(v, "canada") || strings.Contains(v, "toronto") || strings.Contains(v, "vancouver") || strings.Contains(v, "加拿大") || hasExact("ca") || hasPrefix("canada", "toronto", "vancouver", "ca") {
+		return geoip.RegionCA
+	}
+	if strings.Contains(v, "australia") || strings.Contains(v, "sydney") || strings.Contains(v, "melbourne") || strings.Contains(v, "澳大利亚") || hasExact("au") || hasPrefix("australia", "sydney", "melbourne", "au") {
+		return geoip.RegionAU
+	}
+	if strings.Contains(v, "united states") || strings.Contains(v, "california") || strings.Contains(v, "america") || strings.Contains(v, "los angeles") || hasExact("us") || hasPrefix("us", "america", "california") {
+		return geoip.RegionUS
+	}
+
+	return geoip.RegionOther
 }
 
 func sanitizeTag(name string) string {

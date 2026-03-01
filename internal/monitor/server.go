@@ -172,29 +172,33 @@ func (s *Server) SetConfig(cfg *config.Config) {
 		s.cfg.ExternalIP = cfg.ExternalIP
 		s.cfg.ProbeTarget = cfg.Management.ProbeTarget
 		s.cfg.SkipCertVerify = cfg.SkipCertVerify
+		s.cfg.ProxyUsername = cfg.Listener.Username
+		s.cfg.ProxyPassword = cfg.Listener.Password
 	}
 }
 
 // getSettings returns current dynamic settings (thread-safe).
-func (s *Server) getSettings() (externalIP, probeTarget string, skipCertVerify bool) {
+func (s *Server) getSettings() (externalIP, probeTarget string, skipCertVerify bool, proxyUsername, proxyPassword string) {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
-	return s.cfg.ExternalIP, s.cfg.ProbeTarget, s.cfg.SkipCertVerify
+	return s.cfg.ExternalIP, s.cfg.ProbeTarget, s.cfg.SkipCertVerify, s.cfg.ProxyUsername, s.cfg.ProxyPassword
 }
 
 // updateSettings updates dynamic settings and persists to config file.
-func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify bool) error {
+func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify bool, proxyUsername, proxyPassword string) error {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
 
 	s.cfg.ExternalIP = externalIP
 	s.cfg.ProbeTarget = probeTarget
 	s.cfg.SkipCertVerify = skipCertVerify
+	s.cfg.ProxyUsername = proxyUsername
+	s.cfg.ProxyPassword = proxyPassword
 
 	if settingsSaver, ok := s.nodeMgr.(interface {
-		SaveSettings(ctx context.Context, externalIP, probeTarget string, skipCertVerify bool) error
+		SaveSettings(ctx context.Context, externalIP, probeTarget string, skipCertVerify bool, proxyUsername, proxyPassword string) error
 	}); ok {
-		if err := settingsSaver.SaveSettings(context.Background(), externalIP, probeTarget, skipCertVerify); err != nil {
+		if err := settingsSaver.SaveSettings(context.Background(), externalIP, probeTarget, skipCertVerify, proxyUsername, proxyPassword); err != nil {
 			return fmt.Errorf("保存配置失败: %w", err)
 		}
 		return nil
@@ -207,6 +211,8 @@ func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify b
 	s.cfgSrc.ExternalIP = externalIP
 	s.cfgSrc.Management.ProbeTarget = probeTarget
 	s.cfgSrc.SkipCertVerify = skipCertVerify
+	s.cfgSrc.Listener.Username = proxyUsername
+	s.cfgSrc.Listener.Password = proxyPassword
 
 	if err := s.cfgSrc.SaveSettings(); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
@@ -635,7 +641,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		// 在 pool 模式下，所有节点共享同一端口，也正常导出
 		listenAddr := snap.ListenAddress
 		if listenAddr == "0.0.0.0" || listenAddr == "::" {
-			if extIP, _, _ := s.getSettings(); extIP != "" {
+			if extIP, _, _, _, _ := s.getSettings(); extIP != "" {
 				listenAddr = extIP
 			}
 		}
@@ -657,21 +663,25 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(strings.Join(lines, "\n")))
 }
 
-// handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify).
+// handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, proxy auth).
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		extIP, probeTarget, skipCertVerify := s.getSettings()
+		extIP, probeTarget, skipCertVerify, proxyUsername, proxyPassword := s.getSettings()
 		writeJSON(w, map[string]any{
 			"external_ip":      extIP,
 			"probe_target":     probeTarget,
 			"skip_cert_verify": skipCertVerify,
+			"proxy_username":   proxyUsername,
+			"proxy_password":   proxyPassword,
 		})
 	case http.MethodPut:
 		var req struct {
 			ExternalIP     string `json:"external_ip"`
 			ProbeTarget    string `json:"probe_target"`
 			SkipCertVerify bool   `json:"skip_cert_verify"`
+			ProxyUsername  string `json:"proxy_username"`
+			ProxyPassword  string `json:"proxy_password"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -681,8 +691,10 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 		extIP := strings.TrimSpace(req.ExternalIP)
 		probeTarget := strings.TrimSpace(req.ProbeTarget)
+		proxyUsername := strings.TrimSpace(req.ProxyUsername)
+		proxyPassword := strings.TrimSpace(req.ProxyPassword)
 
-		if err := s.updateSettings(extIP, probeTarget, req.SkipCertVerify); err != nil {
+		if err := s.updateSettings(extIP, probeTarget, req.SkipCertVerify, proxyUsername, proxyPassword); err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			writeJSON(w, map[string]any{"error": err.Error()})
 			return
@@ -693,6 +705,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			"external_ip":      extIP,
 			"probe_target":     probeTarget,
 			"skip_cert_verify": req.SkipCertVerify,
+			"proxy_username":   proxyUsername,
+			"proxy_password":   proxyPassword,
 			"need_reload":      true,
 		})
 	default:

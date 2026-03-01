@@ -3,7 +3,9 @@ package pool
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"math/rand"
 	"net"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easy_proxies/internal/geoip"
 	"easy_proxies/internal/monitor"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -54,7 +57,7 @@ type MemberMeta struct {
 	Mode          string
 	ListenAddress string
 	Port          uint16
-	Region        string // GeoIP region code: "jp", "kr", "us", "hk", "tw", "other"
+	Region        string // GeoIP region code: "jp", "kr", "us", "hk", "tw", "sg", "de", "gb", "ca", "au", "other"
 	Country       string // Full country name from GeoIP
 }
 
@@ -68,6 +71,10 @@ type memberState struct {
 	tag      string
 	entry    *monitor.EntryHandle
 	shared   *sharedMemberState
+
+	regionResolved   atomic.Bool
+	regionResolving  atomic.Bool
+	regionRetryAfter atomic.Int64
 }
 
 type poolOutbound struct {
@@ -299,10 +306,13 @@ func (p *poolOutbound) initializeMembersLocked() error {
 			shared:   state,
 			entry:    state.entryHandle(),
 		}
+		meta := p.options.Metadata[tag]
+		if meta.Region != "" && meta.Region != geoip.RegionOther {
+			member.regionResolved.Store(true)
+		}
 
 		// Connect to existing monitor entry if available
 		if p.monitor != nil {
-			meta := p.options.Metadata[tag]
 			info := monitor.NodeInfo{
 				Tag:           tag,
 				Name:          meta.Name,
@@ -563,6 +573,7 @@ func (p *poolOutbound) recordSuccess(member *memberState) {
 	if member.shared != nil {
 		member.shared.recordSuccess()
 	}
+	p.maybeResolveMemberLocation(member)
 }
 
 func (p *poolOutbound) wrapConn(conn net.Conn, member *memberState) net.Conn {
@@ -730,6 +741,7 @@ func (p *poolOutbound) markProbeSuccess(member *memberState, latency time.Durati
 	if member.entry != nil {
 		member.entry.RecordSuccessWithLatency(latency)
 	}
+	p.maybeResolveMemberLocation(member)
 }
 
 func normalizeDomain(host string) string {
@@ -742,6 +754,115 @@ func normalizeDomain(host string) string {
 		return ""
 	}
 	return host
+}
+
+func (p *poolOutbound) maybeResolveMemberLocation(member *memberState) {
+	if member == nil || member.entry == nil {
+		return
+	}
+	if member.regionResolved.Load() {
+		return
+	}
+	now := time.Now().Unix()
+	if retryAfter := member.regionRetryAfter.Load(); retryAfter > now {
+		return
+	}
+	if !member.regionResolving.CompareAndSwap(false, true) {
+		return
+	}
+
+	go func() {
+		defer member.regionResolving.Store(false)
+
+		ctx, cancel := context.WithTimeout(p.ctx, 12*time.Second)
+		defer cancel()
+
+		region, country, err := p.resolveMemberLocation(ctx, member)
+		if err != nil {
+			member.regionRetryAfter.Store(time.Now().Add(10 * time.Minute).Unix())
+			return
+		}
+
+		member.entry.UpdateLocation(region, country)
+		member.regionResolved.Store(true)
+		member.regionRetryAfter.Store(0)
+		p.logger.Info("region resolved for ", member.tag, ": ", region, " (", country, ")")
+	}()
+}
+
+func (p *poolOutbound) resolveMemberLocation(ctx context.Context, member *memberState) (string, string, error) {
+	if member == nil {
+		return "", "", fmt.Errorf("member is nil")
+	}
+
+	destination := M.ParseSocksaddrHostPort("www.cloudflare.com", 443)
+	conn, err := member.outbound.DialContext(ctx, N.NetworkTCP, destination)
+	if err != nil {
+		return "", "", err
+	}
+	defer conn.Close()
+
+	isoCode, err := cloudflareTraceISO(conn)
+	if err != nil {
+		return "", "", err
+	}
+
+	region := geoip.RegionFromISO(isoCode)
+	country := geoip.RegionName(region)
+	if region == geoip.RegionOther {
+		country = strings.ToUpper(strings.TrimSpace(isoCode))
+		if country == "" {
+			country = "Unknown"
+		}
+	}
+
+	return region, country, nil
+}
+
+func cloudflareTraceISO(conn net.Conn) (string, error) {
+	if conn == nil {
+		return "", fmt.Errorf("connection is nil")
+	}
+
+	tlsConn := tls.Client(conn, &tls.Config{ServerName: "www.cloudflare.com", MinVersion: tls.VersionTLS12})
+	defer tlsConn.Close()
+
+	_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
+	if err := tlsConn.Handshake(); err != nil {
+		return "", fmt.Errorf("tls handshake: %w", err)
+	}
+
+	req := "GET /cdn-cgi/trace HTTP/1.1\r\nHost: www.cloudflare.com\r\nConnection: close\r\nUser-Agent: easy-proxies/1.0\r\nAccept: */*\r\n\r\n"
+	if _, err := tlsConn.Write([]byte(req)); err != nil {
+		return "", fmt.Errorf("write trace request: %w", err)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(tlsConn, 64*1024))
+	if err != nil {
+		return "", fmt.Errorf("read trace response: %w", err)
+	}
+
+	return parseCloudflareTraceISO(string(raw))
+}
+
+func parseCloudflareTraceISO(raw string) (string, error) {
+	sep := strings.Index(raw, "\r\n\r\n")
+	if sep == -1 {
+		return "", fmt.Errorf("invalid trace response")
+	}
+	body := raw[sep+4:]
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "loc=") {
+			continue
+		}
+		iso := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(line, "loc=")))
+		if len(iso) != 2 {
+			return "", fmt.Errorf("invalid loc value: %q", iso)
+		}
+		return iso, nil
+	}
+	return "", fmt.Errorf("loc not found in trace response")
 }
 
 // makeReleaseByTagFunc creates a release function that works before member initialization
