@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1078,7 +1079,94 @@ func buildTrojanURI(p clashProxy) string {
 func buildShadowsocksURI(p clashProxy) string {
 	userInfo := base64.StdEncoding.EncodeToString([]byte(p.Cipher + ":" + p.Password))
 	name := strings.TrimSpace(p.Name)
-	return fmt.Sprintf("ss://%s@%s:%d#%s", userInfo, p.Server, p.Port, url.QueryEscape(name))
+
+	params := url.Values{}
+	if plugin, pluginOpts := buildShadowsocksPlugin(p.Plugin, p.PluginOpts); plugin != "" {
+		params.Set("plugin", plugin)
+		if pluginOpts != "" {
+			params.Set("plugin-opts", pluginOpts)
+		}
+	}
+
+	query := ""
+	if len(params) > 0 {
+		query = "?" + params.Encode()
+	}
+
+	return fmt.Sprintf("ss://%s@%s:%d%s#%s", userInfo, p.Server, p.Port, query, url.QueryEscape(name))
+}
+
+func buildShadowsocksPlugin(plugin string, pluginOpts map[string]interface{}) (string, string) {
+	plugin = strings.ToLower(strings.TrimSpace(plugin))
+	if plugin == "" {
+		return "", ""
+	}
+
+	switch plugin {
+	case "obfs", "simple-obfs", "obfs-local":
+		mode := firstNonEmpty(
+			interfaceToString(pluginOpts["mode"]),
+			interfaceToString(pluginOpts["obfs"]),
+			interfaceToString(pluginOpts["obfs-mode"]),
+		)
+		host := firstNonEmpty(
+			interfaceToString(pluginOpts["host"]),
+			interfaceToString(pluginOpts["obfs-host"]),
+		)
+
+		parts := make([]string, 0, 2)
+		if mode != "" {
+			parts = append(parts, "obfs="+mode)
+		}
+		if host != "" {
+			parts = append(parts, "obfs-host="+host)
+		}
+		return "obfs-local", strings.Join(parts, ";")
+	default:
+		return plugin, flattenPluginOptions(pluginOpts)
+	}
+}
+
+func flattenPluginOptions(opts map[string]interface{}) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := interfaceToString(opts[k])
+		if v == "" {
+			continue
+		}
+		parts = append(parts, k+"="+v)
+	}
+	return strings.Join(parts, ";")
+}
+
+func interfaceToString(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func buildHysteria2URI(p clashProxy) string {
