@@ -84,14 +84,7 @@ func Build(cfg *config.Config) (option.Options, error) {
 			Name: node.Name,
 			URI:  node.URI,
 			Mode: cfg.Mode,
-		}
-		// For multi-port and hybrid modes, use per-node port
-		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
-			meta.ListenAddress = cfg.MultiPort.Address
-			meta.Port = node.Port
-		} else {
-			meta.ListenAddress = cfg.Listener.Address
-			meta.Port = cfg.Listener.Port
+			Port: node.Port,
 		}
 
 		// Region classification priority:
@@ -166,35 +159,72 @@ func Build(cfg *config.Config) (option.Options, error) {
 	// Determine which components to enable based on mode
 	enablePoolInbound := cfg.Mode == "pool" || cfg.Mode == "hybrid"
 	enableMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
+	namedPools := cfg.EffectiveNamedPools()
 
 	if !enablePoolInbound && !enableMultiPort {
 		return option.Options{}, fmt.Errorf("unsupported mode %s", cfg.Mode)
 	}
 
-	// Build pool inbound (single entry point for all nodes)
+	primaryPoolName := "default"
+	if len(namedPools) > 0 && strings.TrimSpace(namedPools[0].Name) != "" {
+		primaryPoolName = namedPools[0].Name
+	}
+
+	// Build named pool inbounds (one entry point per business pool)
 	if enablePoolInbound {
-		inbound, err := buildPoolInbound(cfg)
-		if err != nil {
-			return option.Options{}, err
+		if len(namedPools) == 0 {
+			namedPools = []config.NamedPoolConfig{{
+				Name:     "default",
+				Listener: cfg.Listener,
+				Pool:     cfg.Pool,
+			}}
 		}
-		inbounds = append(inbounds, inbound)
-		poolOptions := poolout.Options{
-			Mode:                    cfg.Pool.Mode,
-			Members:                 memberTags,
-			FailureThreshold:        cfg.Pool.FailureThreshold,
-			BlacklistDuration:       cfg.Pool.BlacklistDuration,
-			DomainFailureThreshold:  cfg.Pool.DomainFailureThreshold,
-			DomainBlacklistDuration: cfg.Pool.DomainBlacklistDuration,
-			DomainRecheckInterval:   cfg.Pool.DomainRecheckInterval,
-			DomainRecheckTimeout:    cfg.Pool.DomainRecheckTimeout,
-			Metadata:                metadata,
+
+		for idx, namedPool := range namedPools {
+			inboundTag, outboundTag := buildNamedPoolTags(namedPool.Name, idx, len(namedPools))
+			inbound, err := buildNamedPoolInbound(namedPool, inboundTag)
+			if err != nil {
+				return option.Options{}, err
+			}
+			inbounds = append(inbounds, inbound)
+
+			poolMeta := cloneMetadataForPool(metadata, namedPool.Listener.Address, namedPool.Listener.Port)
+			poolOptions := poolout.Options{
+				PoolName:                namedPool.Name,
+				Mode:                    namedPool.Pool.Mode,
+				Members:                 memberTags,
+				FailureThreshold:        namedPool.Pool.FailureThreshold,
+				BlacklistDuration:       namedPool.Pool.BlacklistDuration,
+				DomainFailureThreshold:  namedPool.Pool.DomainFailureThreshold,
+				DomainBlacklistDuration: namedPool.Pool.DomainBlacklistDuration,
+				DomainRecheckInterval:   namedPool.Pool.DomainRecheckInterval,
+				DomainRecheckTimeout:    namedPool.Pool.DomainRecheckTimeout,
+				Metadata:                poolMeta,
+			}
+			outbounds = append(outbounds, option.Outbound{
+				Type:    poolout.Type,
+				Tag:     outboundTag,
+				Options: &poolOptions,
+			})
+
+			route.Rules = append(route.Rules, option.Rule{
+				Type: C.RuleTypeDefault,
+				DefaultOptions: option.DefaultRule{
+					RawDefaultRule: option.RawDefaultRule{
+						Inbound: badoption.Listable[string]{inboundTag},
+					},
+					RuleAction: option.RuleAction{
+						Action: C.RuleActionTypeRoute,
+						RouteOptions: option.RouteActionOptions{
+							Outbound: outboundTag,
+						},
+					},
+				},
+			})
+			if route.Final == "" {
+				route.Final = outboundTag
+			}
 		}
-		outbounds = append(outbounds, option.Outbound{
-			Type:    poolout.Type,
-			Tag:     poolout.Tag,
-			Options: &poolOptions,
-		})
-		route.Final = poolout.Tag
 	}
 
 	// Build multi-port inbounds (one port per node)
@@ -205,9 +235,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 		for _, tag := range memberTags {
 			meta := metadata[tag]
+			meta.ListenAddress = cfg.MultiPort.Address
 			perMeta := map[string]poolout.MemberMeta{tag: meta}
 			poolTag := fmt.Sprintf("%s-%s", poolout.Tag, tag)
 			perOptions := poolout.Options{
+				PoolName:                primaryPoolName,
 				Mode:                    "sequential",
 				Members:                 []string{tag},
 				FailureThreshold:        cfg.Pool.FailureThreshold,
@@ -260,51 +292,64 @@ func Build(cfg *config.Config) (option.Options, error) {
 
 	// Build GeoIP region-based pool outbounds and routing
 	if cfg.GeoIP.Enabled && enablePoolInbound {
-		// Create pool outbound for each region that has nodes
-		for _, region := range geoip.AllRegions() {
-			members := regionMembers[region]
-			if len(members) == 0 {
-				continue
+		if len(namedPools) > 1 {
+			log.Printf("⚠️  GeoIP region routing currently supports a single named pool, skipping GeoIP routes for %d pools", len(namedPools))
+		} else {
+			effectivePool := config.NamedPoolConfig{Name: "default", Listener: cfg.Listener, Pool: cfg.Pool}
+			if len(namedPools) == 1 {
+				effectivePool = namedPools[0]
 			}
 
-			// Build metadata for this region's members
-			regionMeta := make(map[string]poolout.MemberMeta)
-			for _, tag := range members {
-				regionMeta[tag] = metadata[tag]
+			// Create pool outbound for each region that has nodes
+			for _, region := range geoip.AllRegions() {
+				members := regionMembers[region]
+				if len(members) == 0 {
+					continue
+				}
+
+				// Build metadata for this region's members
+				regionMeta := make(map[string]poolout.MemberMeta)
+				for _, tag := range members {
+					meta := metadata[tag]
+					meta.ListenAddress = effectivePool.Listener.Address
+					meta.Port = effectivePool.Listener.Port
+					regionMeta[tag] = meta
+				}
+
+				regionPoolTag := fmt.Sprintf("pool-%s", region)
+				regionPoolOptions := poolout.Options{
+					PoolName:                fmt.Sprintf("%s:%s", effectivePool.Name, region),
+					Mode:                    effectivePool.Pool.Mode,
+					Members:                 members,
+					FailureThreshold:        effectivePool.Pool.FailureThreshold,
+					BlacklistDuration:       effectivePool.Pool.BlacklistDuration,
+					DomainFailureThreshold:  effectivePool.Pool.DomainFailureThreshold,
+					DomainBlacklistDuration: effectivePool.Pool.DomainBlacklistDuration,
+					DomainRecheckInterval:   effectivePool.Pool.DomainRecheckInterval,
+					DomainRecheckTimeout:    effectivePool.Pool.DomainRecheckTimeout,
+					Metadata:                regionMeta,
+				}
+				outbounds = append(outbounds, option.Outbound{
+					Type:    poolout.Type,
+					Tag:     regionPoolTag,
+					Options: &regionPoolOptions,
+				})
 			}
 
-			regionPoolTag := fmt.Sprintf("pool-%s", region)
-			regionPoolOptions := poolout.Options{
-				Mode:                    cfg.Pool.Mode,
-				Members:                 members,
-				FailureThreshold:        cfg.Pool.FailureThreshold,
-				BlacklistDuration:       cfg.Pool.BlacklistDuration,
-				DomainFailureThreshold:  cfg.Pool.DomainFailureThreshold,
-				DomainBlacklistDuration: cfg.Pool.DomainBlacklistDuration,
-				DomainRecheckInterval:   cfg.Pool.DomainRecheckInterval,
-				DomainRecheckTimeout:    cfg.Pool.DomainRecheckTimeout,
-				Metadata:                regionMeta,
+			// Log GeoIP routing info
+			geoipPort := cfg.GeoIP.Port
+			if geoipPort == 0 {
+				geoipPort = effectivePool.Listener.Port
 			}
-			outbounds = append(outbounds, option.Outbound{
-				Type:    poolout.Type,
-				Tag:     regionPoolTag,
-				Options: &regionPoolOptions,
-			})
+			geoipListen := cfg.GeoIP.Listen
+			if geoipListen == "" {
+				geoipListen = effectivePool.Listener.Address
+			}
+			log.Println("🌐 GeoIP Region Routing Enabled:")
+			log.Printf("   Access via: http://%s:%d/{region}", geoipListen, geoipPort)
+			log.Println("   Available regions: /jp, /kr, /us, /hk, /tw, /other")
+			log.Println("   Default (no path): all nodes pool")
 		}
-
-		// Log GeoIP routing info
-		geoipPort := cfg.GeoIP.Port
-		if geoipPort == 0 {
-			geoipPort = cfg.Listener.Port
-		}
-		geoipListen := cfg.GeoIP.Listen
-		if geoipListen == "" {
-			geoipListen = cfg.Listener.Address
-		}
-		log.Println("🌐 GeoIP Region Routing Enabled:")
-		log.Printf("   Access via: http://%s:%d/{region}", geoipListen, geoipPort)
-		log.Println("   Available regions: /jp, /kr, /us, /hk, /tw, /other")
-		log.Println("   Default (no path): all nodes pool")
 	}
 
 	opts := option.Options{
@@ -316,29 +361,55 @@ func Build(cfg *config.Config) (option.Options, error) {
 	return opts, nil
 }
 
-func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
-	listenAddr, err := parseAddr(cfg.Listener.Address)
+func buildNamedPoolInbound(poolCfg config.NamedPoolConfig, inboundTag string) (option.Inbound, error) {
+	listenAddr, err := parseAddr(poolCfg.Listener.Address)
 	if err != nil {
 		return option.Inbound{}, fmt.Errorf("parse listener address: %w", err)
 	}
 	inboundOptions := &option.HTTPMixedInboundOptions{
 		ListenOptions: option.ListenOptions{
 			Listen:     listenAddr,
-			ListenPort: cfg.Listener.Port,
+			ListenPort: poolCfg.Listener.Port,
 		},
 	}
-	if cfg.Listener.Username != "" {
+	if poolCfg.Listener.Username != "" {
 		inboundOptions.Users = []auth.User{{
-			Username: cfg.Listener.Username,
-			Password: cfg.Listener.Password,
+			Username: poolCfg.Listener.Username,
+			Password: poolCfg.Listener.Password,
 		}}
 	}
 	inbound := option.Inbound{
 		Type:    C.TypeHTTP,
-		Tag:     "http-in",
+		Tag:     inboundTag,
 		Options: inboundOptions,
 	}
 	return inbound, nil
+}
+
+func buildNamedPoolTags(poolName string, index, total int) (string, string) {
+	if total == 1 {
+		normalized := strings.ToLower(strings.TrimSpace(poolName))
+		if normalized == "" || normalized == "default" {
+			return "http-in", poolout.Tag
+		}
+	}
+
+	token := sanitizeTag(poolName)
+	if token == "" {
+		token = fmt.Sprintf("pool-%d", index+1)
+	}
+	return "http-in-" + token, poolout.Tag + "-" + token
+}
+
+func cloneMetadataForPool(src map[string]poolout.MemberMeta, listenAddr string, listenPort uint16) map[string]poolout.MemberMeta {
+	out := make(map[string]poolout.MemberMeta, len(src))
+	for tag, meta := range src {
+		cloned := meta
+		cloned.ListenAddress = listenAddr
+		cloned.Port = listenPort
+		out[tag] = cloned
+	}
+	return out
 }
 
 func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound, error) {
@@ -1003,16 +1074,35 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 	showMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
 
 	if showPoolEntry {
-		// Pool mode: single entry point for all nodes
-		var auth string
-		if cfg.Listener.Username != "" {
-			auth = fmt.Sprintf("%s:%s@", cfg.Listener.Username, cfg.Listener.Password)
+		namedPools := cfg.EffectiveNamedPools()
+		if len(namedPools) <= 1 {
+			poolCfg := config.NamedPoolConfig{Listener: cfg.Listener}
+			if len(namedPools) == 1 {
+				poolCfg = namedPools[0]
+			}
+			var auth string
+			if poolCfg.Listener.Username != "" {
+				auth = fmt.Sprintf("%s:%s@", poolCfg.Listener.Username, poolCfg.Listener.Password)
+			}
+			proxyURL := fmt.Sprintf("http://%s%s:%d", auth, poolCfg.Listener.Address, poolCfg.Listener.Port)
+			log.Printf("🌐 Pool Entry Point:")
+			log.Printf("   %s", proxyURL)
+			log.Println("")
+			log.Printf("   Nodes in pool (%d):", len(metadata))
+		} else {
+			log.Printf("🌐 Named Pool Entry Points (%d pools):", len(namedPools))
+			log.Println("")
+			for _, namedPool := range namedPools {
+				var auth string
+				if namedPool.Listener.Username != "" {
+					auth = fmt.Sprintf("%s:%s@", namedPool.Listener.Username, namedPool.Listener.Password)
+				}
+				proxyURL := fmt.Sprintf("http://%s%s:%d", auth, namedPool.Listener.Address, namedPool.Listener.Port)
+				log.Printf("   [%s] %s", namedPool.Name, proxyURL)
+			}
+			log.Println("")
+			log.Printf("   Nodes shared by each pool (%d):", len(metadata))
 		}
-		proxyURL := fmt.Sprintf("http://%s%s:%d", auth, cfg.Listener.Address, cfg.Listener.Port)
-		log.Printf("🌐 Pool Entry Point:")
-		log.Printf("   %s", proxyURL)
-		log.Println("")
-		log.Printf("   Nodes in pool (%d):", len(metadata))
 		for _, meta := range metadata {
 			log.Printf("   • %s", meta.Name)
 		}

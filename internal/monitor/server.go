@@ -5,14 +5,17 @@ import (
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	mathrand "math/rand"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,6 +23,7 @@ import (
 	"time"
 
 	"easy_proxies/internal/config"
+	"easy_proxies/internal/storage"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -77,6 +81,11 @@ type SubscriptionLog struct {
 	DurationMs   int64     `json:"duration_ms,omitempty"`
 }
 
+type runtimeConfigManager interface {
+	GetRuntimeConfig(ctx context.Context) (storage.RuntimeConfig, error)
+	UpdateRuntimeConfig(ctx context.Context, runtime storage.RuntimeConfig) (storage.RuntimeConfig, error)
+}
+
 // Server exposes HTTP endpoints for monitoring.
 type Server struct {
 	cfg    Config
@@ -129,9 +138,11 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
+	mux.HandleFunc("/api/runtime-config", s.withAuth(s.handleRuntimeConfig))
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
+	mux.HandleFunc("/api/nodes/ban", s.withAuth(s.handleNodeBan))
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
@@ -213,6 +224,10 @@ func (s *Server) updateSettings(externalIP, probeTarget string, skipCertVerify b
 	s.cfgSrc.SkipCertVerify = skipCertVerify
 	s.cfgSrc.Listener.Username = proxyUsername
 	s.cfgSrc.Listener.Password = proxyPassword
+	if len(s.cfgSrc.NamedPools) > 0 {
+		s.cfgSrc.NamedPools[0].Listener.Username = proxyUsername
+		s.cfgSrc.NamedPools[0].Listener.Password = proxyPassword
+	}
 
 	if err := s.cfgSrc.SaveSettings(); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
@@ -364,6 +379,9 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	if decoded, err := url.PathUnescape(tag); err == nil {
+		tag = decoded
+	}
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
@@ -399,6 +417,154 @@ func (s *Server) handleNodeAction(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+func (s *Server) handleNodeBan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		NodeIP   string `json:"node_ip"`
+		PoolName string `json:"pool_name"`
+		Duration string `json:"duration"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+
+	nodeIP := strings.TrimSpace(req.NodeIP)
+	poolName := strings.TrimSpace(req.PoolName)
+	if nodeIP == "" || poolName == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "node_ip 和 pool_name 不能为空"})
+		return
+	}
+
+	duration, err := time.ParseDuration(strings.TrimSpace(req.Duration))
+	if err != nil || duration <= 0 {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "duration 格式无效，示例: 30m, 2h"})
+		return
+	}
+
+	matcher, err := buildNodeIPMatcher(nodeIP)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+
+	snapshots := s.mgr.Snapshot()
+	matchedTags := make([]string, 0)
+	bannedUntil := time.Time{}
+
+	for _, snap := range snapshots {
+		if !strings.EqualFold(strings.TrimSpace(snap.PoolName), poolName) {
+			continue
+		}
+		host := extractHostFromNodeURI(snap.URI)
+		if !matcher(host, snap.URI) {
+			continue
+		}
+		until, banErr := s.mgr.Ban(snap.Tag, duration)
+		if banErr != nil {
+			continue
+		}
+		if until.After(bannedUntil) {
+			bannedUntil = until
+		}
+		matchedTags = append(matchedTags, snap.Tag)
+	}
+
+	if len(matchedTags) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, map[string]any{"error": "未找到符合条件的节点"})
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"message":      "节点已封禁",
+		"pool_name":    poolName,
+		"matched":      len(matchedTags),
+		"matched_tags": matchedTags,
+		"banned_until": bannedUntil,
+	})
+}
+
+func buildNodeIPMatcher(nodeIP string) (func(host, rawURI string) bool, error) {
+	nodeIP = strings.TrimSpace(nodeIP)
+	if nodeIP == "" {
+		return nil, errors.New("node_ip 不能为空")
+	}
+	if parsed := net.ParseIP(nodeIP); parsed != nil {
+		normalized := parsed.String()
+		return func(host, _ string) bool {
+			parsedHost := net.ParseIP(strings.TrimSpace(host))
+			if parsedHost == nil {
+				return false
+			}
+			return parsedHost.String() == normalized
+		}, nil
+	}
+	re, err := regexp.Compile(nodeIP)
+	if err != nil {
+		return nil, fmt.Errorf("node_ip 正则无效: %w", err)
+	}
+	return func(host, rawURI string) bool {
+		return re.MatchString(host) || re.MatchString(rawURI)
+	}, nil
+}
+
+func extractHostFromNodeURI(rawURI string) string {
+	rawURI = strings.TrimSpace(rawURI)
+	if rawURI == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(rawURI); err == nil {
+		if host := strings.TrimSpace(parsed.Hostname()); host != "" {
+			return host
+		}
+	}
+
+	lower := strings.ToLower(rawURI)
+	if strings.HasPrefix(lower, "vmess://") {
+		encoded := strings.TrimSpace(strings.TrimPrefix(rawURI, "vmess://"))
+		decoded, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			decoded, err = base64.RawURLEncoding.DecodeString(encoded)
+		}
+		if err == nil {
+			var vmess struct {
+				Add string `json:"add"`
+			}
+			if jsonErr := json.Unmarshal(decoded, &vmess); jsonErr == nil {
+				return strings.TrimSpace(vmess.Add)
+			}
+		}
+	}
+
+	if strings.HasPrefix(lower, "ss://") {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(rawURI, "ss://"))
+		if idx := strings.Index(trimmed, "#"); idx >= 0 {
+			trimmed = trimmed[:idx]
+		}
+		if idx := strings.LastIndex(trimmed, "@"); idx >= 0 && idx+1 < len(trimmed) {
+			hostPort := trimmed[idx+1:]
+			if parsedHost, _, err := net.SplitHostPort(hostPort); err == nil {
+				return strings.TrimSpace(parsedHost)
+			}
+			if colon := strings.LastIndex(hostPort, ":"); colon > 0 {
+				return strings.TrimSpace(hostPort[:colon])
+			}
+			return strings.TrimSpace(hostPort)
+		}
+	}
+
+	return ""
 }
 
 // handleProbeAll probes all nodes in batches and returns results via SSE
@@ -661,6 +827,73 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=proxy_pool.txt")
 	_, _ = w.Write([]byte(strings.Join(lines, "\n")))
+}
+
+func (s *Server) handleRuntimeConfig(w http.ResponseWriter, r *http.Request) {
+	runtimeMgr, ok := s.nodeMgr.(runtimeConfigManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "运行配置管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		runtimeCfg, err := runtimeMgr.GetRuntimeConfig(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{
+			"config":             runtimeCfg,
+			"database_managed":   true,
+			"need_reload":        false,
+			"supports_apply_now": true,
+		})
+	case http.MethodPut:
+		var req struct {
+			Config   storage.RuntimeConfig `json:"config"`
+			ApplyNow bool                  `json:"apply_now"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+
+		updated, err := runtimeMgr.UpdateRuntimeConfig(r.Context(), req.Config)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+
+		reloaded := false
+		if req.ApplyNow {
+			if err := s.nodeMgr.TriggerReload(r.Context()); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{
+					"error":          fmt.Sprintf("配置已保存到数据库，但重载失败: %v", err),
+					"saved":          true,
+					"need_reload":    true,
+					"runtime_config": updated,
+				})
+				return
+			}
+			reloaded = true
+		}
+
+		writeJSON(w, map[string]any{
+			"message":        "运行配置已保存",
+			"runtime_config": updated,
+			"saved":          true,
+			"reloaded":       reloaded,
+			"need_reload":    !reloaded,
+		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, proxy auth).

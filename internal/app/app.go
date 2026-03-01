@@ -59,6 +59,22 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			if settings.ProxyAuthSet {
 				cfg.Listener.Username = settings.ProxyUsername
 				cfg.Listener.Password = settings.ProxyPassword
+				if len(cfg.NamedPools) > 0 {
+					cfg.NamedPools[0].Listener.Username = settings.ProxyUsername
+					cfg.NamedPools[0].Listener.Password = settings.ProxyPassword
+				}
+			}
+		} else {
+			seedSettings := storage.Settings{
+				ExternalIP:     cfg.ExternalIP,
+				ProbeTarget:    cfg.Management.ProbeTarget,
+				SkipCertVerify: cfg.SkipCertVerify,
+				ProxyUsername:  cfg.Listener.Username,
+				ProxyPassword:  cfg.Listener.Password,
+				ProxyAuthSet:   strings.TrimSpace(cfg.Listener.Username) != "" || strings.TrimSpace(cfg.Listener.Password) != "",
+			}
+			if err := gormStore.SaveSettings(ctx, seedSettings); err != nil {
+				log.Printf("WARN: seed db settings failed: %v", err)
 			}
 		}
 
@@ -90,16 +106,6 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			if err := gormStore.SaveNodes(ctx, cfg.Nodes); err != nil {
 				return fmt.Errorf("seed db nodes: %w", err)
 			}
-			if err := gormStore.SaveSettings(ctx, storage.Settings{
-				ExternalIP:     cfg.ExternalIP,
-				ProbeTarget:    cfg.Management.ProbeTarget,
-				SkipCertVerify: cfg.SkipCertVerify,
-				ProxyUsername:  cfg.Listener.Username,
-				ProxyPassword:  cfg.Listener.Password,
-				ProxyAuthSet:   strings.TrimSpace(cfg.Listener.Username) != "" || strings.TrimSpace(cfg.Listener.Password) != "",
-			}); err != nil {
-				log.Printf("WARN: seed db settings failed: %v", err)
-			}
 		}
 
 		if len(cfg.Subscriptions) == 0 {
@@ -122,6 +128,13 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
 	proxyPassword := cfg.Listener.Password
+	if cfg.Mode == "pool" {
+		namedPools := cfg.EffectiveNamedPools()
+		if len(namedPools) > 0 {
+			proxyUsername = namedPools[0].Listener.Username
+			proxyPassword = namedPools[0].Listener.Password
+		}
+	}
 	if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
 		proxyUsername = cfg.MultiPort.Username
 		proxyPassword = cfg.MultiPort.Password
@@ -256,6 +269,7 @@ func buildRuntimeConfig(cfg *config.Config) storage.RuntimeConfig {
 	return storage.RuntimeConfig{
 		Mode:                cfg.Mode,
 		Listener:            cfg.Listener,
+		NamedPools:          append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
 		MultiPort:           cfg.MultiPort,
 		Pool:                cfg.Pool,
 		ManagementEnabled:   cloneBoolPtr(cfg.Management.Enabled),
@@ -275,6 +289,7 @@ func applyRuntimeConfig(cfg *config.Config, runtimeCfg storage.RuntimeConfig) {
 
 	cfg.Mode = runtimeCfg.Mode
 	cfg.Listener = runtimeCfg.Listener
+	cfg.NamedPools = append([]config.NamedPoolConfig(nil), runtimeCfg.NamedPools...)
 	cfg.MultiPort = runtimeCfg.MultiPort
 	cfg.Pool = runtimeCfg.Pool
 	cfg.Management.Enabled = cloneBoolPtr(runtimeCfg.ManagementEnabled)

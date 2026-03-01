@@ -779,10 +779,15 @@ func (m *Manager) DeleteNode(ctx context.Context, name string) error {
 	if m.store != nil {
 		oldTags := buildNodeTags(backup)
 		newTags := buildNodeTags(m.cfg.Nodes)
+		namedPools := m.cfg.EffectiveNamedPools()
 		for _, tag := range oldTags {
 			if !containsString(newTags, tag) {
 				_ = m.store.DeleteNodeRuntimeState(ctx, tag)
 				_ = m.store.DeleteSharedRuntimeState(ctx, tag)
+				_ = m.store.DeleteSharedRuntimeState(ctx, normalizeSharedRuntimeStateKey("default", tag))
+				for _, namedPool := range namedPools {
+					_ = m.store.DeleteSharedRuntimeState(ctx, normalizeSharedRuntimeStateKey(namedPool.Name, tag))
+				}
 			}
 		}
 	}
@@ -848,6 +853,10 @@ func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget stri
 	m.cfg.SkipCertVerify = skipCertVerify
 	m.cfg.Listener.Username = proxyUsername
 	m.cfg.Listener.Password = proxyPassword
+	if len(m.cfg.NamedPools) > 0 {
+		m.cfg.NamedPools[0].Listener.Username = proxyUsername
+		m.cfg.NamedPools[0].Listener.Password = proxyPassword
+	}
 
 	if m.store != nil {
 		return m.store.SaveSettings(ctx, storage.Settings{
@@ -856,7 +865,7 @@ func (m *Manager) SaveSettings(ctx context.Context, externalIP, probeTarget stri
 			SkipCertVerify: skipCertVerify,
 			ProxyUsername:  proxyUsername,
 			ProxyPassword:  proxyPassword,
-			ProxyAuthSet:   true,
+			ProxyAuthSet:   strings.TrimSpace(proxyUsername) != "" || strings.TrimSpace(proxyPassword) != "",
 		})
 	}
 	return m.cfg.SaveSettings()
@@ -884,6 +893,65 @@ func (m *Manager) SaveSubscriptions(ctx context.Context, subscriptions []string)
 		return m.store.SaveSubscriptions(ctx, normalized)
 	}
 	return m.cfg.SaveSubscriptions()
+}
+
+// GetRuntimeConfig returns current runtime config (excluding DB connection settings).
+func (m *Manager) GetRuntimeConfig(ctx context.Context) (storage.RuntimeConfig, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return storage.RuntimeConfig{}, err
+		}
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.cfg == nil {
+		return storage.RuntimeConfig{}, errConfigUnavailable
+	}
+	if m.store == nil {
+		return storage.RuntimeConfig{}, errors.New("运行配置管理需要启用数据库存储")
+	}
+	return buildRuntimeConfigFromConfig(m.cfg), nil
+}
+
+// UpdateRuntimeConfig updates runtime config and persists it to DB.
+// This endpoint is DB-first: when database store is unavailable, it returns an error.
+func (m *Manager) UpdateRuntimeConfig(ctx context.Context, runtimeCfg storage.RuntimeConfig) (storage.RuntimeConfig, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return storage.RuntimeConfig{}, err
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.cfg == nil {
+		return storage.RuntimeConfig{}, errConfigUnavailable
+	}
+	if m.store == nil {
+		return storage.RuntimeConfig{}, errors.New("运行配置持久化需要启用数据库存储")
+	}
+
+	nextCfg := m.copyConfigLocked()
+	if nextCfg == nil {
+		return storage.RuntimeConfig{}, errConfigUnavailable
+	}
+	applyRuntimeConfigToConfig(nextCfg, runtimeCfg)
+
+	portMap := m.cfg.BuildPortMap()
+	if err := nextCfg.NormalizeWithPortMap(portMap); err != nil {
+		return storage.RuntimeConfig{}, fmt.Errorf("校验运行配置失败: %w", err)
+	}
+
+	newRuntime := buildRuntimeConfigFromConfig(nextCfg)
+	if err := m.store.SaveRuntimeConfig(ctx, newRuntime); err != nil {
+		return storage.RuntimeConfig{}, fmt.Errorf("保存运行配置失败: %w", err)
+	}
+
+	applyRuntimeConfigToConfig(m.cfg, newRuntime)
+	m.applyConfigSettings(m.cfg)
+	return newRuntime, nil
 }
 
 func (m *Manager) persistNodesLocked(ctx context.Context) error {
@@ -988,6 +1056,52 @@ func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	return false
 }
 
+func buildRuntimeConfigFromConfig(cfg *config.Config) storage.RuntimeConfig {
+	if cfg == nil {
+		return storage.RuntimeConfig{}
+	}
+	return storage.RuntimeConfig{
+		Mode:                cfg.Mode,
+		Listener:            cfg.Listener,
+		NamedPools:          append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
+		MultiPort:           cfg.MultiPort,
+		Pool:                cfg.Pool,
+		ManagementEnabled:   cloneBoolPointer(cfg.Management.Enabled),
+		ManagementListen:    cfg.Management.Listen,
+		ManagementPassword:  cfg.Management.Password,
+		SubscriptionRefresh: cfg.SubscriptionRefresh,
+		GeoIP:               cfg.GeoIP,
+		NodesFile:           cfg.NodesFile,
+		LogLevel:            cfg.LogLevel,
+	}
+}
+
+func applyRuntimeConfigToConfig(cfg *config.Config, runtimeCfg storage.RuntimeConfig) {
+	if cfg == nil {
+		return
+	}
+	cfg.Mode = runtimeCfg.Mode
+	cfg.Listener = runtimeCfg.Listener
+	cfg.NamedPools = append([]config.NamedPoolConfig(nil), runtimeCfg.NamedPools...)
+	cfg.MultiPort = runtimeCfg.MultiPort
+	cfg.Pool = runtimeCfg.Pool
+	cfg.Management.Enabled = cloneBoolPointer(runtimeCfg.ManagementEnabled)
+	cfg.Management.Listen = runtimeCfg.ManagementListen
+	cfg.Management.Password = runtimeCfg.ManagementPassword
+	cfg.SubscriptionRefresh = runtimeCfg.SubscriptionRefresh
+	cfg.GeoIP = runtimeCfg.GeoIP
+	cfg.NodesFile = runtimeCfg.NodesFile
+	cfg.LogLevel = runtimeCfg.LogLevel
+}
+
+func cloneBoolPointer(v *bool) *bool {
+	if v == nil {
+		return nil
+	}
+	cpy := *v
+	return &cpy
+}
+
 func cloneNodes(nodes []config.NodeConfig) []config.NodeConfig {
 	if len(nodes) == 0 {
 		return []config.NodeConfig{} // Return empty slice, not nil, for proper JSON serialization
@@ -1003,6 +1117,12 @@ func (m *Manager) copyConfigLocked() *config.Config {
 	}
 	cloned := *m.cfg
 	cloned.Nodes = cloneNodes(m.cfg.Nodes)
+	cloned.Subscriptions = append([]string(nil), m.cfg.Subscriptions...)
+	cloned.NamedPools = append([]config.NamedPoolConfig(nil), m.cfg.NamedPools...)
+	cloned.Management.Enabled = cloneBoolPointer(m.cfg.Management.Enabled)
+	cloned.Storage = m.cfg.Storage
+	cloned.SubscriptionRefresh = m.cfg.SubscriptionRefresh
+	cloned.GeoIP = m.cfg.GeoIP
 	cloned.SetFilePath(m.cfg.FilePath())
 	return &cloned
 }
@@ -1142,6 +1262,14 @@ func containsString(items []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeSharedRuntimeStateKey(poolName, tag string) string {
+	poolName = strings.TrimSpace(poolName)
+	if poolName == "" {
+		poolName = "default"
+	}
+	return poolName + "::" + strings.TrimSpace(tag)
 }
 
 type monitorRuntimeStoreAdapter struct {

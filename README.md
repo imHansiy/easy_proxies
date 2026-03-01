@@ -12,13 +12,15 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **Subscription Support**: Auto-fetch nodes from subscription links (Base64, Clash YAML, etc.)
 - **Subscription Auto-Refresh**: Automatic periodic refresh with WebUI manual trigger (⚠️ causes connection interruption)
 - **Pool Mode**: Automatic failover and load balancing
+- **Named Pools (Business Isolation)**: Multiple business entry pools by port (`named_pools`), each pool keeps independent blacklist/cooldown state for the same node
   - **GeoIP Region Routing** ⭐ (Optional): Access region-specific node pools via URL paths
     - `/jp` `/kr` `/us` `/hk` `/tw` `/sg` `/de` `/gb` `/ca` `/au` `/other`
     - Auto-download GeoIP database on first startup
     - Automatic periodic updates (configurable, default 24h)
     - Hot-reload without service interruption
+    - Current limitation: GeoIP region routing is available when using a single pool entry
 - **Multi-Port Mode**: Each node listens on independent port
-- **Hybrid Mode**: Pool + Multi-Port simultaneously with shared node state
+- **Hybrid Mode**: Pool + Multi-Port simultaneously (`multi-port` shares state with the primary pool)
 
 ### Management & Monitoring
 - **Web Dashboard**: Real-time node status, latency probing, one-click export
@@ -26,6 +28,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **Auto Health Check**: Initial check on startup, periodic checks every 5 minutes
 - **Smart Node Filtering**: Auto-hide unavailable nodes, sort by latency
 - **Domain-Level Blacklist**: Track blocked domains per node (e.g. Cloudflare-protected targets), with blacklist APIs and scheduled auto-recheck recovery
+- **Active Ban API**: Business systems can call `POST /api/nodes/ban` to ban only one target pool without impacting other pools
 - **Port Preservation**: Existing nodes keep their ports when adding/updating nodes
 
 ### Security & Performance (New!)
@@ -40,6 +43,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 ### Deployment
 - **Flexible Configuration**: Config file, node file, subscription links
 - **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite for nodes, subscriptions, runtime settings, and runtime state
+- **Database-First Runtime Config**: All runtime config (except DB connection settings) can be managed in WebUI and persisted in DB
 - **Environment Variables**: Supports `DB_DRIVER`, `DB_DSN`, `DATABASE_URL`, etc.
 - **Multi-Architecture**: Docker images for both AMD64 and ARM64
 - **Password Protection**: WebUI authentication with secure session management
@@ -117,6 +121,29 @@ listener:
   username: username
   password: password
 
+# Named pools (optional): one port per business pool
+# named_pools:
+#   - name: openai
+#     listener:
+#       address: 0.0.0.0
+#       port: 2323
+#       username: username
+#       password: password
+#     pool:
+#       mode: sequential
+#       failure_threshold: 2
+#       blacklist_duration: 2h
+#   - name: tiktok
+#     listener:
+#       address: 0.0.0.0
+#       port: 2324
+#       username: username
+#       password: password
+#     pool:
+#       mode: random
+#       failure_threshold: 5
+#       blacklist_duration: 30m
+
 # Pool Settings
 pool:
   mode: sequential            # sequential or random
@@ -131,11 +158,20 @@ multi_port:
   password: mppass
 ```
 
+Notes:
+- If `named_pools` is omitted, the app auto-creates a `default` pool from `listener` + `pool` (backward compatible).
+- `LISTENER_*` environment variables still control the primary/default pool.
+- Business segregation is done by listener port / `pool_name`, not by proxy username.
+
 ### Operating Modes
 
-#### Pool Mode
+#### Pool Mode (Single or Named Pools)
 
-All nodes share a single entry point, program auto-selects available nodes:
+Pool mode supports:
+- Single entry pool (legacy `listener`)
+- Multiple named entry pools (`named_pools`) for business isolation
+
+Single entry example:
 
 ```yaml
 mode: pool
@@ -152,9 +188,43 @@ pool:
   blacklist_duration: 24h
 ```
 
-**Use Case:** Automatic failover, load balancing
+Named pools example:
 
-**Usage:** Set proxy to `http://user:pass@localhost:2323`
+```yaml
+mode: pool
+
+named_pools:
+  - name: openai
+    listener:
+      address: 0.0.0.0
+      port: 2323
+      username: user
+      password: pass
+    pool:
+      mode: sequential
+      failure_threshold: 2
+      blacklist_duration: 2h
+
+  - name: tiktok
+    listener:
+      address: 0.0.0.0
+      port: 2324
+      username: user
+      password: pass
+    pool:
+      mode: random
+      failure_threshold: 5
+      blacklist_duration: 30m
+```
+
+**Use Case:** Automatic failover, load balancing, and cross-business risk isolation
+
+**Usage:** Use the corresponding port per business pool, e.g. `http://user:pass@localhost:2323` for `openai` and `http://user:pass@localhost:2324` for `tiktok`
+
+Named pool notes:
+- All named pools share the same underlying node list by default
+- Blacklist/manual ban/cooldown state is isolated by `pool_name + node`
+- Business isolation is done by listener port / `pool_name`, not by proxy username
 
 #### Multi-Port Mode
 
@@ -204,7 +274,7 @@ nodes_file: nodes.txt
 
 #### Hybrid Mode
 
-Combines Pool and Multi-Port modes, sharing node state between them:
+Combines Pool and Multi-Port modes: Multi-Port shares state with the primary pool, while named pools remain isolated from each other.
 
 ```yaml
 mode: hybrid
@@ -253,9 +323,8 @@ pool:
 
 **Key Features:**
 
-- **Shared State**: Node blacklist status syncs between Pool and Multi-Port
-  - If a node fails in Pool mode, it's also marked unavailable in Multi-Port
-  - Health checks update both modes simultaneously
+- **Primary Pool Shared State**: In hybrid mode, Multi-Port shares state with the primary pool (`named_pools[0]` or legacy `listener`)
+- **Named Pool Isolation**: Different named pools keep independent node blacklist/ban state
 - **Auto Port Reassignment**: If a port is occupied, automatically assigns next available port
 - **Flexible Access**: Use Pool for load balancing, Multi-Port for specific node access
 
@@ -406,6 +475,10 @@ In Multi-Port mode, ports are automatically allocated from `base_port`.
 | POST | `/api/reload` | Reload configuration |
 | GET | `/api/settings` | Get current settings |
 | PUT | `/api/settings` | Update settings (external_ip, probe_target) |
+| GET | `/api/runtime-config` | Get full runtime config (database) |
+| PUT | `/api/runtime-config` | Update full runtime config (database) |
+| POST | `/api/nodes/ban` | Ban nodes in a specific pool (`node_ip` supports IP or regex) |
+| GET | `/api/blacklist` | Get node domain blacklist list |
 
 **Request/Response Example:**
 
@@ -420,7 +493,34 @@ curl -X DELETE http://localhost:9090/api/nodes/config/NodeName
 
 # Reload config
 curl -X POST http://localhost:9090/api/reload
+
+# Active ban for a business pool (does not affect other pools)
+curl -X POST http://localhost:9090/api/nodes/ban \
+  -H "Content-Type: application/json" \
+  -d '{"node_ip":"^1\\.2\\.3\\..*","pool_name":"openai","duration":"6h"}'
+
+# Get full runtime config (database)
+curl http://localhost:9090/api/runtime-config
+
+# Update runtime config and reload immediately
+curl -X PUT http://localhost:9090/api/runtime-config \
+  -H "Content-Type: application/json" \
+  -d '{"config":{"mode":"pool","listener":{"address":"0.0.0.0","port":2323},"named_pools":[{"name":"openai","listener":{"address":"0.0.0.0","port":2323},"pool":{"mode":"sequential","failure_threshold":2,"blacklist_duration":"2h"}}],"multi_port":{"address":"0.0.0.0","base_port":24000},"pool":{"mode":"sequential","failure_threshold":3,"blacklist_duration":"24h"},"management_enabled":true,"management_listen":"0.0.0.0:9090","management_password":"","subscription_refresh":{"enabled":true,"interval":"1h","timeout":"30s","health_check_timeout":"60s","drain_timeout":"30s","min_available_nodes":1},"geoip":{"enabled":false,"database_path":"GeoLite2-Country.mmdb","auto_update_enabled":true,"auto_update_interval":"24h"},"nodes_file":"nodes.txt","log_level":"info"},"apply_now":true}'
 ```
+
+`/api/nodes/ban` fields:
+- `node_ip`: exact IP or regular expression
+- `pool_name`: target business pool name
+- `duration`: ban duration, e.g. `30m`, `2h`, `24h`
+
+Notes:
+- This endpoint uses the same Web management authentication as other APIs
+- It only bans matched nodes in the specified pool and does not affect other pools
+
+`/api/runtime-config` notes:
+- This endpoint manages database-backed runtime config (excluding DB connection settings)
+- `PUT` saves to DB by default; set `apply_now=true` to trigger reload immediately
+- You can edit it in WebUI under the manage tab: "Runtime Config (Database)"
 
 ### Health Check Mechanism
 
@@ -499,7 +599,8 @@ subscription_refresh:
 
 | Port | Purpose |
 |------|---------|
-| 2323 | Unified proxy entry (Pool/Hybrid mode) |
+| 2323 (default) | Default pool entry when `named_pools` is not configured |
+| configured `named_pools` ports | Business-isolated pool entries (Pool/Hybrid mode) |
 | 9090 | Web dashboard |
 | 24000+ | Per-node ports (Multi-Port/Hybrid mode) |
 
@@ -524,7 +625,7 @@ Render-related env vars supported by the app:
 - `RENDER_EXPOSE`: `management` (default, binds WebUI/API to `PORT`) or `proxy`
 - `SUBSCRIPTIONS`: optional bootstrap URLs (comma or newline separated)
 - `DB_DRIVER` / `DB_DSN`: database persistence
-- `LISTENER_USERNAME` / `LISTENER_PASSWORD`: proxy auth
+- `LISTENER_USERNAME` / `LISTENER_PASSWORD`: proxy auth for the default/primary pool
 - `MANAGEMENT_PASSWORD`: WebUI login password
 
 > Note: Render Web Services expose only one public HTTP port. `management` mode is recommended by default for health checks and operations.

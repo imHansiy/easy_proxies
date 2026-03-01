@@ -23,6 +23,7 @@ import (
 type Config struct {
 	Mode                string                    `yaml:"mode"`
 	Listener            ListenerConfig            `yaml:"listener"`
+	NamedPools          []NamedPoolConfig         `yaml:"named_pools"`
 	MultiPort           MultiPortConfig           `yaml:"multi_port"`
 	Pool                PoolConfig                `yaml:"pool"`
 	Management          ManagementConfig          `yaml:"management"`
@@ -93,57 +94,64 @@ func (s StorageConfig) ShouldAutoMigrate() bool {
 
 // GeoIPConfig controls GeoIP-based region routing.
 type GeoIPConfig struct {
-	Enabled            bool          `yaml:"enabled"`              // 是否启用 GeoIP 地域分区
-	DatabasePath       string        `yaml:"database_path"`        // GeoLite2-Country.mmdb 文件路径
-	Listen             string        `yaml:"listen"`               // GeoIP 路由监听地址，默认使用 listener 配置
-	Port               uint16        `yaml:"port"`                 // GeoIP 路由监听端口，默认 2323
-	AutoUpdateEnabled  bool          `yaml:"auto_update_enabled"`  // 是否启用自动更新数据库
-	AutoUpdateInterval time.Duration `yaml:"auto_update_interval"` // 自动更新间隔，默认 24 小时
+	Enabled            bool          `yaml:"enabled" json:"enabled"`                           // 是否启用 GeoIP 地域分区
+	DatabasePath       string        `yaml:"database_path" json:"database_path"`               // GeoLite2-Country.mmdb 文件路径
+	Listen             string        `yaml:"listen" json:"listen"`                             // GeoIP 路由监听地址，默认使用 listener 配置
+	Port               uint16        `yaml:"port" json:"port"`                                 // GeoIP 路由监听端口，默认 2323
+	AutoUpdateEnabled  bool          `yaml:"auto_update_enabled" json:"auto_update_enabled"`   // 是否启用自动更新数据库
+	AutoUpdateInterval time.Duration `yaml:"auto_update_interval" json:"auto_update_interval"` // 自动更新间隔，默认 24 小时
 }
 
 // ListenerConfig defines how the HTTP proxy should listen for clients.
 type ListenerConfig struct {
-	Address  string `yaml:"address"`
-	Port     uint16 `yaml:"port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Address  string `yaml:"address" json:"address"`
+	Port     uint16 `yaml:"port" json:"port"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
+}
+
+// NamedPoolConfig defines an isolated business pool bound to one listener.
+type NamedPoolConfig struct {
+	Name     string         `yaml:"name" json:"name"`
+	Listener ListenerConfig `yaml:"listener" json:"listener"`
+	Pool     PoolConfig     `yaml:"pool" json:"pool"`
 }
 
 // PoolConfig configures scheduling + failure handling.
 type PoolConfig struct {
-	Mode                    string        `yaml:"mode"`
-	FailureThreshold        int           `yaml:"failure_threshold"`
-	BlacklistDuration       time.Duration `yaml:"blacklist_duration"`
-	DomainFailureThreshold  int           `yaml:"domain_failure_threshold"`
-	DomainBlacklistDuration time.Duration `yaml:"domain_blacklist_duration"`
-	DomainRecheckInterval   time.Duration `yaml:"domain_recheck_interval"`
-	DomainRecheckTimeout    time.Duration `yaml:"domain_recheck_timeout"`
+	Mode                    string        `yaml:"mode" json:"mode"`
+	FailureThreshold        int           `yaml:"failure_threshold" json:"failure_threshold"`
+	BlacklistDuration       time.Duration `yaml:"blacklist_duration" json:"blacklist_duration"`
+	DomainFailureThreshold  int           `yaml:"domain_failure_threshold" json:"domain_failure_threshold"`
+	DomainBlacklistDuration time.Duration `yaml:"domain_blacklist_duration" json:"domain_blacklist_duration"`
+	DomainRecheckInterval   time.Duration `yaml:"domain_recheck_interval" json:"domain_recheck_interval"`
+	DomainRecheckTimeout    time.Duration `yaml:"domain_recheck_timeout" json:"domain_recheck_timeout"`
 }
 
 // MultiPortConfig defines address/credential defaults for multi-port mode.
 type MultiPortConfig struct {
-	Address  string `yaml:"address"`
-	BasePort uint16 `yaml:"base_port"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Address  string `yaml:"address" json:"address"`
+	BasePort uint16 `yaml:"base_port" json:"base_port"`
+	Username string `yaml:"username" json:"username"`
+	Password string `yaml:"password" json:"password"`
 }
 
 // ManagementConfig controls the monitoring HTTP endpoint.
 type ManagementConfig struct {
-	Enabled     *bool  `yaml:"enabled"`
-	Listen      string `yaml:"listen"`
-	ProbeTarget string `yaml:"probe_target"`
-	Password    string `yaml:"password"` // WebUI 访问密码，为空则不需要密码
+	Enabled     *bool  `yaml:"enabled" json:"enabled"`
+	Listen      string `yaml:"listen" json:"listen"`
+	ProbeTarget string `yaml:"probe_target" json:"probe_target"`
+	Password    string `yaml:"password" json:"password"` // WebUI 访问密码，为空则不需要密码
 }
 
 // SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
 type SubscriptionRefreshConfig struct {
-	Enabled            bool          `yaml:"enabled"`              // 是否启用定时刷新
-	Interval           time.Duration `yaml:"interval"`             // 刷新间隔，默认 1 小时
-	Timeout            time.Duration `yaml:"timeout"`              // 获取订阅的超时时间
-	HealthCheckTimeout time.Duration `yaml:"health_check_timeout"` // 新节点健康检查超时
-	DrainTimeout       time.Duration `yaml:"drain_timeout"`        // 旧实例排空超时时间
-	MinAvailableNodes  int           `yaml:"min_available_nodes"`  // 最少可用节点数，低于此值不切换
+	Enabled            bool          `yaml:"enabled" json:"enabled"`                           // 是否启用定时刷新
+	Interval           time.Duration `yaml:"interval" json:"interval"`                         // 刷新间隔，默认 1 小时
+	Timeout            time.Duration `yaml:"timeout" json:"timeout"`                           // 获取订阅的超时时间
+	HealthCheckTimeout time.Duration `yaml:"health_check_timeout" json:"health_check_timeout"` // 新节点健康检查超时
+	DrainTimeout       time.Duration `yaml:"drain_timeout" json:"drain_timeout"`               // 旧实例排空超时时间
+	MinAvailableNodes  int           `yaml:"min_available_nodes" json:"min_available_nodes"`   // 最少可用节点数，低于此值不切换
 }
 
 // NodeSource indicates where a node configuration originated from.
@@ -153,6 +161,7 @@ const (
 	NodeSourceInline       NodeSource = "inline"       // Defined directly in file-based config nodes array
 	NodeSourceFile         NodeSource = "nodes_file"   // Loaded from external nodes file
 	NodeSourceSubscription NodeSource = "subscription" // Fetched from subscription URL
+	defaultNamedPoolName   string     = "default"
 )
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
@@ -232,27 +241,7 @@ func (c *Config) normalize() error {
 	if c.Listener.Port == 0 {
 		c.Listener.Port = 2323
 	}
-	if c.Pool.Mode == "" {
-		c.Pool.Mode = "sequential"
-	}
-	if c.Pool.FailureThreshold <= 0 {
-		c.Pool.FailureThreshold = 3
-	}
-	if c.Pool.BlacklistDuration <= 0 {
-		c.Pool.BlacklistDuration = 24 * time.Hour
-	}
-	if c.Pool.DomainFailureThreshold <= 0 {
-		c.Pool.DomainFailureThreshold = 2
-	}
-	if c.Pool.DomainBlacklistDuration <= 0 {
-		c.Pool.DomainBlacklistDuration = 12 * time.Hour
-	}
-	if c.Pool.DomainRecheckInterval <= 0 {
-		c.Pool.DomainRecheckInterval = 10 * time.Minute
-	}
-	if c.Pool.DomainRecheckTimeout <= 0 {
-		c.Pool.DomainRecheckTimeout = 10 * time.Second
-	}
+	normalizePoolConfigDefaults(&c.Pool)
 	if c.MultiPort.Address == "" {
 		c.MultiPort.Address = "0.0.0.0"
 	}
@@ -268,6 +257,9 @@ func (c *Config) normalize() error {
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
+	}
+	if err := c.normalizeNamedPools(); err != nil {
+		return err
 	}
 
 	// Subscription refresh defaults
@@ -399,23 +391,27 @@ func (c *Config) normalize() error {
 
 	// Auto-fix port conflicts in hybrid mode (pool port vs multi-port)
 	if c.Mode == "hybrid" {
-		poolPort := c.Listener.Port
+		poolPorts := c.namedPoolPorts()
+		poolPortSet := make(map[uint16]struct{}, len(poolPorts))
 		usedPorts := make(map[uint16]bool)
-		usedPorts[poolPort] = true
+		for _, poolPort := range poolPorts {
+			usedPorts[poolPort] = true
+			poolPortSet[poolPort] = struct{}{}
+		}
 		for idx := range c.Nodes {
 			usedPorts[c.Nodes[idx].Port] = true
 		}
 		for idx := range c.Nodes {
-			if c.Nodes[idx].Port == poolPort {
+			if _, conflict := poolPortSet[c.Nodes[idx].Port]; conflict {
 				// Find next available port
 				newPort := c.Nodes[idx].Port + 1
 				for usedPorts[newPort] || !isPortAvailable(c.MultiPort.Address, newPort) {
 					newPort++
 					if newPort > 65535 {
-						return fmt.Errorf("no available port for node %q after conflict with pool port %d", c.Nodes[idx].Name, poolPort)
+						return fmt.Errorf("no available port for node %q after conflict with pool listener port", c.Nodes[idx].Name)
 					}
 				}
-				log.Printf("⚠️  Node %q port %d conflicts with pool port, reassigned to %d", c.Nodes[idx].Name, poolPort, newPort)
+				log.Printf("⚠️  Node %q port %d conflicts with pool listener port, reassigned to %d", c.Nodes[idx].Name, c.Nodes[idx].Port, newPort)
 				usedPorts[newPort] = true
 				c.Nodes[idx].Port = newPort
 			}
@@ -423,6 +419,166 @@ func (c *Config) normalize() error {
 	}
 
 	return nil
+}
+
+func normalizePoolConfigDefaults(pool *PoolConfig) {
+	if pool == nil {
+		return
+	}
+	if pool.Mode == "" {
+		pool.Mode = "sequential"
+	}
+	if pool.FailureThreshold <= 0 {
+		pool.FailureThreshold = 3
+	}
+	if pool.BlacklistDuration <= 0 {
+		pool.BlacklistDuration = 24 * time.Hour
+	}
+	if pool.DomainFailureThreshold <= 0 {
+		pool.DomainFailureThreshold = 2
+	}
+	if pool.DomainBlacklistDuration <= 0 {
+		pool.DomainBlacklistDuration = 12 * time.Hour
+	}
+	if pool.DomainRecheckInterval <= 0 {
+		pool.DomainRecheckInterval = 10 * time.Minute
+	}
+	if pool.DomainRecheckTimeout <= 0 {
+		pool.DomainRecheckTimeout = 10 * time.Second
+	}
+}
+
+func applyPoolConfigFallback(pool *PoolConfig, fallback PoolConfig) {
+	if pool == nil {
+		return
+	}
+	if pool.Mode == "" {
+		pool.Mode = fallback.Mode
+	}
+	if pool.FailureThreshold <= 0 {
+		pool.FailureThreshold = fallback.FailureThreshold
+	}
+	if pool.BlacklistDuration <= 0 {
+		pool.BlacklistDuration = fallback.BlacklistDuration
+	}
+	if pool.DomainFailureThreshold <= 0 {
+		pool.DomainFailureThreshold = fallback.DomainFailureThreshold
+	}
+	if pool.DomainBlacklistDuration <= 0 {
+		pool.DomainBlacklistDuration = fallback.DomainBlacklistDuration
+	}
+	if pool.DomainRecheckInterval <= 0 {
+		pool.DomainRecheckInterval = fallback.DomainRecheckInterval
+	}
+	if pool.DomainRecheckTimeout <= 0 {
+		pool.DomainRecheckTimeout = fallback.DomainRecheckTimeout
+	}
+}
+
+func normalizePoolName(name string, index int) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		if index == 0 {
+			return defaultNamedPoolName
+		}
+		return fmt.Sprintf("pool-%d", index+1)
+	}
+	return name
+}
+
+func (c *Config) normalizeNamedPools() error {
+	if c == nil {
+		return nil
+	}
+
+	defaultPool := c.Pool
+	normalizePoolConfigDefaults(&defaultPool)
+
+	if len(c.NamedPools) == 0 {
+		c.NamedPools = []NamedPoolConfig{{
+			Name:     defaultNamedPoolName,
+			Listener: c.Listener,
+			Pool:     defaultPool,
+		}}
+	}
+
+	nameSet := make(map[string]struct{}, len(c.NamedPools))
+	listenerSet := make(map[string]string, len(c.NamedPools))
+	for idx := range c.NamedPools {
+		pool := &c.NamedPools[idx]
+		pool.Name = normalizePoolName(pool.Name, idx)
+
+		nameKey := strings.ToLower(pool.Name)
+		if _, exists := nameSet[nameKey]; exists {
+			return fmt.Errorf("duplicate named pool name %q", pool.Name)
+		}
+		nameSet[nameKey] = struct{}{}
+
+		if pool.Listener.Address == "" {
+			pool.Listener.Address = c.Listener.Address
+		}
+		if pool.Listener.Port == 0 {
+			if idx == 0 {
+				pool.Listener.Port = c.Listener.Port
+			} else {
+				candidate := int(c.Listener.Port) + idx
+				if candidate > 65535 {
+					return fmt.Errorf("named pool %q computed listener port exceeds 65535", pool.Name)
+				}
+				pool.Listener.Port = uint16(candidate)
+			}
+		}
+		if pool.Listener.Username == "" {
+			pool.Listener.Username = c.Listener.Username
+		}
+		if pool.Listener.Password == "" {
+			pool.Listener.Password = c.Listener.Password
+		}
+
+		applyPoolConfigFallback(&pool.Pool, defaultPool)
+		normalizePoolConfigDefaults(&pool.Pool)
+
+		bindKey := net.JoinHostPort(pool.Listener.Address, strconv.Itoa(int(pool.Listener.Port)))
+		if existing, exists := listenerSet[bindKey]; exists {
+			return fmt.Errorf("named pools %q and %q use the same listener %s", existing, pool.Name, bindKey)
+		}
+		listenerSet[bindKey] = pool.Name
+	}
+
+	// Keep legacy fields aligned for compatibility.
+	c.Listener = c.NamedPools[0].Listener
+	c.Pool = c.NamedPools[0].Pool
+	return nil
+}
+
+// EffectiveNamedPools returns a copy of configured named pools.
+func (c *Config) EffectiveNamedPools() []NamedPoolConfig {
+	if c == nil {
+		return nil
+	}
+	if len(c.NamedPools) == 0 {
+		poolCfg := c.Pool
+		normalizePoolConfigDefaults(&poolCfg)
+		return []NamedPoolConfig{{
+			Name:     defaultNamedPoolName,
+			Listener: c.Listener,
+			Pool:     poolCfg,
+		}}
+	}
+	out := make([]NamedPoolConfig, len(c.NamedPools))
+	copy(out, c.NamedPools)
+	return out
+}
+
+func (c *Config) namedPoolPorts() []uint16 {
+	pools := c.EffectiveNamedPools()
+	ports := make([]uint16, 0, len(pools))
+	for _, pool := range pools {
+		if pool.Listener.Port > 0 {
+			ports = append(ports, pool.Listener.Port)
+		}
+	}
+	return ports
 }
 
 // BuildPortMap creates a mapping from node URI to port for existing nodes.
@@ -457,27 +613,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if c.Listener.Port == 0 {
 		c.Listener.Port = 2323
 	}
-	if c.Pool.Mode == "" {
-		c.Pool.Mode = "sequential"
-	}
-	if c.Pool.FailureThreshold <= 0 {
-		c.Pool.FailureThreshold = 3
-	}
-	if c.Pool.BlacklistDuration <= 0 {
-		c.Pool.BlacklistDuration = 24 * time.Hour
-	}
-	if c.Pool.DomainFailureThreshold <= 0 {
-		c.Pool.DomainFailureThreshold = 2
-	}
-	if c.Pool.DomainBlacklistDuration <= 0 {
-		c.Pool.DomainBlacklistDuration = 12 * time.Hour
-	}
-	if c.Pool.DomainRecheckInterval <= 0 {
-		c.Pool.DomainRecheckInterval = 10 * time.Minute
-	}
-	if c.Pool.DomainRecheckTimeout <= 0 {
-		c.Pool.DomainRecheckTimeout = 10 * time.Second
-	}
+	normalizePoolConfigDefaults(&c.Pool)
 	if c.MultiPort.Address == "" {
 		c.MultiPort.Address = "0.0.0.0"
 	}
@@ -493,6 +629,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
+	}
+	if err := c.normalizeNamedPools(); err != nil {
+		return err
 	}
 	if c.SubscriptionRefresh.Interval <= 0 {
 		c.SubscriptionRefresh.Interval = 1 * time.Hour
@@ -520,7 +659,9 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	// Build set of ports already assigned from portMap
 	usedPorts := make(map[uint16]bool)
 	if c.Mode == "hybrid" {
-		usedPorts[c.Listener.Port] = true
+		for _, poolPort := range c.namedPoolPorts() {
+			usedPorts[poolPort] = true
+		}
 	}
 
 	// First pass: assign ports from portMap for existing nodes
@@ -589,7 +730,44 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		c.LogLevel = "info"
 	}
 
+	if c.Mode == "hybrid" {
+		poolPortSet := make(map[uint16]struct{})
+		for _, poolPort := range c.namedPoolPorts() {
+			poolPortSet[poolPort] = struct{}{}
+		}
+		used := make(map[uint16]struct{}, len(c.Nodes))
+		for _, node := range c.Nodes {
+			if node.Port > 0 {
+				used[node.Port] = struct{}{}
+			}
+		}
+		for idx := range c.Nodes {
+			if _, conflict := poolPortSet[c.Nodes[idx].Port]; !conflict {
+				continue
+			}
+			newPort := c.Nodes[idx].Port + 1
+			for {
+				if _, exists := used[newPort]; !exists && !portConflictsPool(newPort, poolPortSet) && isPortAvailable(c.MultiPort.Address, newPort) {
+					break
+				}
+				newPort++
+				if newPort > 65535 {
+					return fmt.Errorf("no available port for node %q after conflict with pool listener port", c.Nodes[idx].Name)
+				}
+			}
+			log.Printf("⚠️  Node %q port %d conflicts with pool listener port, reassigned to %d", c.Nodes[idx].Name, c.Nodes[idx].Port, newPort)
+			delete(used, c.Nodes[idx].Port)
+			used[newPort] = struct{}{}
+			c.Nodes[idx].Port = newPort
+		}
+	}
+
 	return nil
+}
+
+func portConflictsPool(port uint16, poolPortSet map[uint16]struct{}) bool {
+	_, conflict := poolPortSet[port]
+	return conflict
 }
 
 // ManagementEnabled reports whether the monitoring endpoint should run.
@@ -1100,6 +1278,10 @@ func (c *Config) SaveSettings() error {
 	saveCfg.SkipCertVerify = c.SkipCertVerify
 	saveCfg.Listener.Username = c.Listener.Username
 	saveCfg.Listener.Password = c.Listener.Password
+	if len(saveCfg.NamedPools) > 0 {
+		saveCfg.NamedPools[0].Listener.Username = c.Listener.Username
+		saveCfg.NamedPools[0].Listener.Password = c.Listener.Password
+	}
 
 	newData, err := yaml.Marshal(&saveCfg)
 	if err != nil {
@@ -1286,6 +1468,20 @@ func (c *Config) ApplyEnvOverrides() error {
 
 	if v, ok, _ := lookupEnvAlias("LISTENER_PASSWORD"); ok {
 		c.Listener.Password = strings.TrimSpace(v)
+	}
+	if len(c.NamedPools) > 0 {
+		if listenerAddressOverridden {
+			c.NamedPools[0].Listener.Address = c.Listener.Address
+		}
+		if listenerPortOverridden {
+			c.NamedPools[0].Listener.Port = c.Listener.Port
+		}
+		if c.Listener.Username != "" {
+			c.NamedPools[0].Listener.Username = c.Listener.Username
+		}
+		if c.Listener.Password != "" {
+			c.NamedPools[0].Listener.Password = c.Listener.Password
+		}
 	}
 
 	if v, ok, _ := lookupEnvAlias("MULTI_PORT_ADDRESS"); ok {
@@ -1512,9 +1708,15 @@ func (c *Config) ApplyEnvOverrides() error {
 		case "proxy":
 			if !listenerAddressOverridden {
 				c.Listener.Address = "0.0.0.0"
+				if len(c.NamedPools) > 0 {
+					c.NamedPools[0].Listener.Address = c.Listener.Address
+				}
 			}
 			if !listenerPortOverridden {
 				c.Listener.Port = port
+				if len(c.NamedPools) > 0 {
+					c.NamedPools[0].Listener.Port = c.Listener.Port
+				}
 			}
 		default:
 			return fmt.Errorf("invalid RENDER_EXPOSE %q (use proxy or management)", expose)

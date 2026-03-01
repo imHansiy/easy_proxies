@@ -31,6 +31,8 @@ type Config struct {
 // NodeInfo is static metadata about a proxy entry.
 type NodeInfo struct {
 	Tag           string `json:"tag"`
+	NodeTag       string `json:"node_tag,omitempty"`
+	PoolName      string `json:"pool_name,omitempty"`
 	Name          string `json:"name"`
 	URI           string `json:"uri"`
 	Mode          string `json:"mode"`
@@ -98,6 +100,7 @@ type NodeRuntimeState struct {
 
 type probeFunc func(ctx context.Context) (time.Duration, error)
 type releaseFunc func()
+type banFunc func(duration time.Duration) time.Time
 
 type EntryHandle struct {
 	ref *entry
@@ -118,6 +121,7 @@ type entry struct {
 	active           atomic.Int32
 	probe            probeFunc
 	release          releaseFunc
+	ban              banFunc
 	initialCheckDone bool
 	available        bool
 	domainBlacklist  map[string]time.Time
@@ -531,6 +535,27 @@ func (m *Manager) Probe(ctx context.Context, tag string) (time.Duration, error) 
 	return latency, nil
 }
 
+// Ban applies a timed ban to one node entry.
+func (m *Manager) Ban(tag string, duration time.Duration) (time.Time, error) {
+	e, err := m.entry(tag)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if duration <= 0 {
+		return time.Time{}, errors.New("duration must be greater than 0")
+	}
+	if e.ban != nil {
+		until := e.ban(duration)
+		if until.IsZero() {
+			until = time.Now().Add(duration)
+		}
+		return until, nil
+	}
+	until := time.Now().Add(duration)
+	e.blacklistUntil(until)
+	return until, nil
+}
+
 // Release clears blacklist state for the given node.
 func (m *Manager) Release(tag string) error {
 	e, err := m.entry(tag)
@@ -698,6 +723,12 @@ func (e *entry) setRelease(fn releaseFunc) {
 	e.release = fn
 }
 
+func (e *entry) setBan(fn banFunc) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ban = fn
+}
+
 func (e *entry) recordProbeLatency(d time.Duration) {
 	e.mu.Lock()
 	e.lastProbe = d
@@ -798,6 +829,14 @@ func (h *EntryHandle) SetRelease(fn func()) {
 		return
 	}
 	h.ref.setRelease(fn)
+}
+
+// SetBan assigns a manual-ban function.
+func (h *EntryHandle) SetBan(fn func(duration time.Duration) time.Time) {
+	if h == nil || h.ref == nil {
+		return
+	}
+	h.ref.setBan(fn)
 }
 
 // UpdateLocation updates node region/country metadata for UI display.

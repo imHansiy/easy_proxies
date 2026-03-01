@@ -12,13 +12,15 @@
 - **订阅链接支持**: 自动从订阅链接获取节点，支持 Base64、Clash YAML 等格式
 - **订阅定时刷新**: 自动定时刷新订阅，支持 WebUI 手动触发（⚠️ 刷新会导致连接中断）
 - **节点池模式**: 自动故障转移、负载均衡
+- **命名业务池（隔离）**: 通过 `named_pools` 为不同业务分配独立入口端口，同一节点在不同池的黑名单/冷却状态互不影响
   - **GeoIP 地域路由** ⭐（可选功能）: 通过 URL 路径访问特定地域的节点池
     - 支持路径：`/jp`、`/kr`、`/us`、`/hk`、`/tw`、`/sg`、`/de`、`/gb`、`/ca`、`/au`、`/other`
     - 首次启动自动下载 GeoIP 数据库
     - 自动定期更新（可配置间隔，默认 24 小时）
     - 热重载，无需服务中断
+    - 当前限制：GeoIP 地域路由仅在单池入口场景下启用
 - **多端口模式**: 每个节点独立监听端口
-- **混合模式**: 同时启用节点池 + 多端口，节点状态共享同步
+- **混合模式**: 同时启用节点池 + 多端口（多端口与主业务池共享状态）
 
 ### 管理与监控
 - **Web 监控面板**: 实时查看节点状态、延迟探测、一键导出节点
@@ -26,6 +28,7 @@
 - **自动健康检查**: 启动时自动检测所有节点可用性，定期（5分钟）检查节点状态
 - **智能节点过滤**: 自动过滤不可用节点，WebUI 和导出按延迟排序
 - **域名级黑名单**: 按节点记录不可访问域名（如 CF 盾牌），支持查看黑名单列表与后台定时复查自动恢复
+- **主动封控 API**: 第三方业务可调用 `POST /api/nodes/ban`，仅封禁指定业务池中的节点
 - **端口保留**: 添加/更新节点时，已有节点保持原有端口不变
 
 ### 安全与性能（新增！）
@@ -40,6 +43,7 @@
 ### 部署
 - **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
 - **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点、订阅、运行时配置与状态可持久化
+- **数据库优先配置**: 除数据库连接信息外，其他运行配置可在 WebUI 通过数据库读写与管理
 - **环境变量配置**: 支持 `DB_DRIVER`、`DB_DSN`、`DATABASE_URL` 等
 - **多架构支持**: Docker 镜像同时支持 AMD64 和 ARM64
 - **密码保护**: WebUI 支持密码认证，安全的会话管理
@@ -123,6 +127,29 @@ listener:
   username: username
   password: password
 
+# 多业务命名池（可选）：一个端口对应一个业务池
+# named_pools:
+#   - name: openai
+#     listener:
+#       address: 0.0.0.0
+#       port: 2323
+#       username: username
+#       password: password
+#     pool:
+#       mode: sequential
+#       failure_threshold: 2
+#       blacklist_duration: 2h
+#   - name: tiktok
+#     listener:
+#       address: 0.0.0.0
+#       port: 2324
+#       username: username
+#       password: password
+#     pool:
+#       mode: random
+#       failure_threshold: 5
+#       blacklist_duration: 30m
+
 # 节点池配置
 pool:
   mode: sequential            # sequential (顺序) 或 random (随机)
@@ -141,11 +168,20 @@ multi_port:
   password: mppass
 ```
 
+说明：
+- 若未配置 `named_pools`，程序会自动基于 `listener + pool` 生成 `default` 池（完全兼容旧配置）。
+- `LISTENER_*` 环境变量仍用于控制默认/主业务池。
+- 业务隔离通过监听端口 / `pool_name` 完成，不依赖代理用户名。
+
 ### 运行模式详解
 
-#### Pool 模式（节点池）
+#### Pool 模式（单入口或命名多入口）
 
-所有节点共享一个入口地址，程序自动选择可用节点：
+Pool 模式支持：
+- 传统单入口（`listener`）
+- 命名多入口（`named_pools`）用于业务隔离
+
+单入口示例：
 
 ```yaml
 mode: pool
@@ -166,9 +202,43 @@ pool:
   domain_recheck_timeout: 10s
 ```
 
-**适用场景：** 自动故障转移、负载均衡
+命名池示例：
 
-**使用方式：** 配置代理为 `http://user:pass@localhost:2323`
+```yaml
+mode: pool
+
+named_pools:
+  - name: openai
+    listener:
+      address: 0.0.0.0
+      port: 2323
+      username: user
+      password: pass
+    pool:
+      mode: sequential
+      failure_threshold: 2
+      blacklist_duration: 2h
+
+  - name: tiktok
+    listener:
+      address: 0.0.0.0
+      port: 2324
+      username: user
+      password: pass
+    pool:
+      mode: random
+      failure_threshold: 5
+      blacklist_duration: 30m
+```
+
+**适用场景：** 自动故障转移、负载均衡、跨业务风控隔离
+
+**使用方式：** 按业务池使用对应端口，例如 `openai -> 2323`，`tiktok -> 2324`
+
+命名池补充说明：
+- 所有命名池默认共享同一份底层节点列表（节点资源可在不同业务中复用）
+- 节点黑名单、手动封禁、冷却状态按 `pool_name + node` 隔离
+- 业务隔离只看入口端口 / `pool_name`，不依赖代理用户名
 
 #### Multi-Port 模式（多端口）
 
@@ -219,7 +289,7 @@ nodes_file: nodes.txt
 
 #### Hybrid 模式（混合模式）
 
-同时启用节点池和多端口模式，两者共享节点状态：
+同时启用节点池和多端口模式：多端口与主业务池共享状态，不同命名池之间保持隔离。
 
 ```yaml
 mode: hybrid
@@ -268,9 +338,8 @@ pool:
 
 **核心特性：**
 
-- **状态共享**: 节点黑名单状态在节点池和多端口之间同步
-  - 节点池中某节点失败被拉黑，多端口模式也会同步标记为不可用
-  - 健康检查结果同时更新两种模式
+- **主池状态共享**: Hybrid 下多端口与主业务池（`named_pools[0]` 或旧 `listener`）共享节点状态
+- **命名池状态隔离**: 不同业务池的节点黑名单/封禁状态互不影响
 - **端口自动重分配**: 如果端口被占用，自动分配下一个可用端口
 - **灵活访问**: 节点池用于负载均衡，多端口用于直连特定节点
 
@@ -421,6 +490,9 @@ Multi-Port 模式下，端口从 `base_port` 自动分配。
 | POST | `/api/reload` | 重载配置 |
 | GET | `/api/settings` | 获取当前设置 |
 | PUT | `/api/settings` | 更新设置（external_ip, probe_target） |
+| GET | `/api/runtime-config` | 获取完整运行配置（数据库） |
+| PUT | `/api/runtime-config` | 更新完整运行配置（数据库） |
+| POST | `/api/nodes/ban` | 按业务池主动封禁节点（`node_ip` 支持 IP 或正则） |
 | GET | `/api/blacklist` | 获取节点域名黑名单列表 |
 
 **请求示例：**
@@ -436,7 +508,34 @@ curl -X DELETE http://localhost:9090/api/nodes/config/节点名称
 
 # 重载配置
 curl -X POST http://localhost:9090/api/reload
+
+# 业务池主动封禁（仅封禁指定 pool，不影响其他 pool）
+curl -X POST http://localhost:9090/api/nodes/ban \
+  -H "Content-Type: application/json" \
+  -d '{"node_ip":"^1\\.2\\.3\\..*","pool_name":"openai","duration":"6h"}'
+
+# 获取完整运行配置（数据库）
+curl http://localhost:9090/api/runtime-config
+
+# 更新运行配置并立即重载
+curl -X PUT http://localhost:9090/api/runtime-config \
+  -H "Content-Type: application/json" \
+  -d '{"config":{"mode":"pool","listener":{"address":"0.0.0.0","port":2323},"named_pools":[{"name":"openai","listener":{"address":"0.0.0.0","port":2323},"pool":{"mode":"sequential","failure_threshold":2,"blacklist_duration":"2h"}}],"multi_port":{"address":"0.0.0.0","base_port":24000},"pool":{"mode":"sequential","failure_threshold":3,"blacklist_duration":"24h"},"management_enabled":true,"management_listen":"0.0.0.0:9090","management_password":"","subscription_refresh":{"enabled":true,"interval":"1h","timeout":"30s","health_check_timeout":"60s","drain_timeout":"30s","min_available_nodes":1},"geoip":{"enabled":false,"database_path":"GeoLite2-Country.mmdb","auto_update_enabled":true,"auto_update_interval":"24h"},"nodes_file":"nodes.txt","log_level":"info"},"apply_now":true}'
 ```
+
+`/api/nodes/ban` 参数说明：
+- `node_ip`: 可传精确 IP 或正则表达式
+- `pool_name`: 目标业务池名称
+- `duration`: 封禁时长，例如 `30m`、`2h`、`24h`
+
+说明：
+- 该接口受现有 Web 管理认证保护（与其他 API 相同）
+- 仅封禁目标业务池中的命中节点，不影响其他业务池
+
+`/api/runtime-config` 说明：
+- 该接口用于数据库化运行配置（不包含数据库连接地址）
+- `PUT` 成功后默认仅保存到数据库，设置 `apply_now=true` 可立即触发重载
+- 推荐在 WebUI「节点管理」页的“运行配置（数据库）”面板直接编辑
 
 ### 健康检查机制
 
@@ -516,7 +615,8 @@ subscription_refresh:
 
 | 端口 | 用途 |
 |------|------|
-| 2323 | 统一代理入口（节点池/混合模式） |
+| 2323（默认） | 未配置 `named_pools` 时的默认池入口 |
+| `named_pools` 中配置的端口 | 业务隔离的节点池入口（pool/hybrid） |
 | 9090 | Web 监控面板 |
 | 24000+ | 每节点独立端口（多端口/混合模式） |
 
@@ -547,7 +647,7 @@ Render 运行环境可能会重建容器，建议启用 `storage.driver + storag
 - `RENDER_EXPOSE`：`management`（默认，绑定 WebUI/API 到 `PORT`）或 `proxy`
 - `SUBSCRIPTIONS`：可选的初始化订阅链接（支持逗号或换行分隔）
 - `DB_DRIVER` / `DB_DSN`：数据库配置
-- `LISTENER_USERNAME` / `LISTENER_PASSWORD`：代理入口认证
+- `LISTENER_USERNAME` / `LISTENER_PASSWORD`：默认/主业务池代理认证
 - `MANAGEMENT_PASSWORD`：管理面板登录密码
 
 > 注意：Render Web Service 只公开一个 HTTP 端口。默认推荐 `management` 暴露模式（便于健康检查和管理）。

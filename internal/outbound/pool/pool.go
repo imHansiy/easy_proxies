@@ -39,6 +39,7 @@ const (
 
 // Options controls pool outbound behaviour.
 type Options struct {
+	PoolName                string
 	Mode                    string
 	Members                 []string
 	FailureThreshold        int
@@ -127,11 +128,14 @@ func newPool(ctx context.Context, _ adapter.Router, logger log.ContextLogger, ta
 		logger.Info("registering ", len(normalized.Members), " nodes to monitor")
 		for _, memberTag := range normalized.Members {
 			// Acquire shared state for this tag (creates if not exists)
-			state := acquireSharedState(memberTag)
+			state := acquireSharedState(normalized.PoolName, memberTag)
+			monitorTag := composeMonitorTag(normalized.PoolName, memberTag)
 
 			meta := normalized.Metadata[memberTag]
 			info := monitor.NodeInfo{
-				Tag:           memberTag,
+				Tag:           monitorTag,
+				NodeTag:       memberTag,
+				PoolName:      normalized.PoolName,
 				Name:          meta.Name,
 				URI:           meta.URI,
 				Mode:          meta.Mode,
@@ -147,6 +151,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger log.ContextLogger, ta
 				logger.Info("registered node: ", memberTag)
 				// Set probe and release functions immediately
 				entry.SetRelease(p.makeReleaseByTagFunc(memberTag))
+				entry.SetBan(p.makeBanByTagFunc(memberTag))
 				if probeFn := p.makeProbeByTagFunc(memberTag); probeFn != nil {
 					entry.SetProbe(probeFn)
 				}
@@ -162,6 +167,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger log.ContextLogger, ta
 }
 
 func normalizeOptions(options Options) Options {
+	options.PoolName = normalizePoolName(options.PoolName)
 	if options.FailureThreshold <= 0 {
 		options.FailureThreshold = 3
 	}
@@ -208,7 +214,7 @@ func (p *poolOutbound) Start(stage adapter.StartStage) error {
 	if p.monitor != nil {
 		go p.probeAllMembersOnStartup()
 	}
-	if p.tag == Tag {
+	if len(p.options.Members) > 1 {
 		go p.runDomainRecheckLoop()
 	}
 	return nil
@@ -298,7 +304,7 @@ func (p *poolOutbound) initializeMembersLocked() error {
 		}
 
 		// Acquire shared state (creates if not exists, reuses if already created)
-		state := acquireSharedState(tag)
+		state := acquireSharedState(p.options.PoolName, tag)
 
 		member := &memberState{
 			outbound: detour,
@@ -313,8 +319,11 @@ func (p *poolOutbound) initializeMembersLocked() error {
 
 		// Connect to existing monitor entry if available
 		if p.monitor != nil {
+			monitorTag := composeMonitorTag(p.options.PoolName, tag)
 			info := monitor.NodeInfo{
-				Tag:           tag,
+				Tag:           monitorTag,
+				NodeTag:       tag,
+				PoolName:      p.options.PoolName,
 				Name:          meta.Name,
 				URI:           meta.URI,
 				Mode:          meta.Mode,
@@ -328,6 +337,7 @@ func (p *poolOutbound) initializeMembersLocked() error {
 				state.attachEntry(entry)
 				member.entry = entry
 				entry.SetRelease(p.makeReleaseFunc(member))
+				entry.SetBan(p.makeBanFunc(member))
 				if probe := p.makeProbeFunc(member); probe != nil {
 					entry.SetProbe(probe)
 				}
@@ -505,19 +515,26 @@ func (p *poolOutbound) releaseIfAllBlacklistedLocked(now time.Time) bool {
 	if len(p.members) == 0 {
 		return false
 	}
+	hasAutoBlacklist := false
 	// Check if all members are blacklisted
 	for _, member := range p.members {
 		if member.shared == nil || !member.shared.isBlacklisted(now) {
 			return false
 		}
+		if member.shared.hasAutoBlacklist(now) {
+			hasAutoBlacklist = true
+		}
+	}
+	if !hasAutoBlacklist {
+		return false
 	}
 	// All blacklisted, force release all
 	for _, member := range p.members {
 		if member.shared != nil {
-			member.shared.forceRelease()
+			member.shared.clearAutoBlacklist()
 		}
 	}
-	p.logger.Warn("all upstream proxies were blacklisted, releasing them for retry")
+	p.logger.Warn("all upstream proxies temporarily blacklisted, releasing auto-blacklist for retry")
 	return true
 }
 
@@ -735,8 +752,8 @@ func (p *poolOutbound) markProbeSuccess(member *memberState, latency time.Durati
 		return
 	}
 	if member.shared != nil {
-		// If probe succeeds, immediately remove temporary blacklist.
-		member.shared.forceRelease()
+		// Probe success only clears auto penalties. Manual bans remain effective.
+		member.shared.clearAutoBlacklist()
 	}
 	if member.entry != nil {
 		member.entry.RecordSuccessWithLatency(latency)
@@ -868,8 +885,32 @@ func parseCloudflareTraceISO(raw string) (string, error) {
 // makeReleaseByTagFunc creates a release function that works before member initialization
 func (p *poolOutbound) makeReleaseByTagFunc(tag string) func() {
 	return func() {
-		releaseSharedMember(tag)
+		releaseSharedMember(p.options.PoolName, tag)
 	}
+}
+
+func (p *poolOutbound) makeBanFunc(member *memberState) func(duration time.Duration) time.Time {
+	return func(duration time.Duration) time.Time {
+		if member == nil || member.shared == nil {
+			return time.Time{}
+		}
+		return member.shared.manualBan(duration)
+	}
+}
+
+func (p *poolOutbound) makeBanByTagFunc(tag string) func(duration time.Duration) time.Time {
+	return func(duration time.Duration) time.Time {
+		until, _ := banSharedMember(p.options.PoolName, tag, duration)
+		return until
+	}
+}
+
+func composeMonitorTag(poolName, memberTag string) string {
+	poolName = strings.TrimSpace(poolName)
+	if poolName == "" || strings.EqualFold(poolName, "default") {
+		return memberTag
+	}
+	return poolName + "::" + memberTag
 }
 
 type trackedConn struct {

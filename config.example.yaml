@@ -22,11 +22,35 @@ skip_cert_verify: false
 # ───────────────────────────────────────────────────────────────
 # 监听配置（Pool 模式入口）
 # ───────────────────────────────────────────────────────────────
+# 兼容单池写法：如果不配置 named_pools，将自动使用该 listener 作为 default 池。
 listener:
   address: 0.0.0.0      # 监听地址
   port: 2323            # 监听端口
   username: username    # 代理认证用户名
   password: password    # 代理认证密码
+
+# 多业务命名池（可选）：一个端口 = 一个业务池，状态完全隔离
+# named_pools:
+#   - name: openai
+#     listener:
+#       address: 0.0.0.0
+#       port: 2323
+#       username: username
+#       password: password
+#     pool:
+#       mode: sequential
+#       failure_threshold: 2
+#       blacklist_duration: 2h
+#   - name: tiktok
+#     listener:
+#       address: 0.0.0.0
+#       port: 2324
+#       username: username
+#       password: password
+#     pool:
+#       mode: random
+#       failure_threshold: 5
+#       blacklist_duration: 30m
 
 # ───────────────────────────────────────────────────────────────
 # 代理池配置
