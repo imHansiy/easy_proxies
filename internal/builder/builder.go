@@ -72,7 +72,19 @@ func Build(cfg *config.Config) (option.Options, error) {
 			usedTags[baseTag] = 1
 		}
 
-		outbound, err := buildNodeOutbound(tag, node.URI, cfg.SkipCertVerify)
+		var (
+			outbound option.Outbound
+			err      error
+		)
+		if isRelayURI(node.URI) {
+			var relayDeps []option.Outbound
+			outbound, relayDeps, err = buildRelayChainOutbounds(tag, node.URI, cfg.SkipCertVerify)
+			if err == nil && len(relayDeps) > 0 {
+				baseOutbounds = append(baseOutbounds, relayDeps...)
+			}
+		} else {
+			outbound, err = buildNodeOutbound(tag, node.URI, cfg.SkipCertVerify)
+		}
 		if err != nil {
 			log.Printf("❌ Failed to build node '%s': %v (skipping)", node.Name, err)
 			failedNodes = append(failedNodes, node.Name)
@@ -410,6 +422,105 @@ func cloneMetadataForPool(src map[string]poolout.MemberMeta, listenAddr string, 
 		out[tag] = cloned
 	}
 	return out
+}
+
+func isRelayURI(rawURI string) bool {
+	rawURI = strings.TrimSpace(rawURI)
+	return strings.HasPrefix(strings.ToLower(rawURI), "relay://")
+}
+
+func buildRelayChainOutbounds(tag, rawURI string, skipCertVerify bool) (option.Outbound, []option.Outbound, error) {
+	hops, err := parseRelayHops(rawURI)
+	if err != nil {
+		return option.Outbound{}, nil, err
+	}
+
+	auxiliary := make([]option.Outbound, 0, len(hops)-1)
+	var (
+		prevTag string
+		final   option.Outbound
+	)
+
+	for idx, hopURI := range hops {
+		hopTag := tag
+		if idx < len(hops)-1 {
+			hopTag = fmt.Sprintf("%s-hop-%d", tag, idx+1)
+		}
+
+		hopOutbound, err := buildNodeOutbound(hopTag, hopURI, skipCertVerify)
+		if err != nil {
+			return option.Outbound{}, nil, fmt.Errorf("build relay hop %d: %w", idx+1, err)
+		}
+
+		if prevTag != "" {
+			if err := applyOutboundDetour(&hopOutbound, prevTag); err != nil {
+				return option.Outbound{}, nil, fmt.Errorf("apply relay hop %d detour: %w", idx+1, err)
+			}
+		}
+
+		prevTag = hopTag
+		if idx < len(hops)-1 {
+			auxiliary = append(auxiliary, hopOutbound)
+			continue
+		}
+		final = hopOutbound
+	}
+
+	return final, auxiliary, nil
+}
+
+func parseRelayHops(rawURI string) ([]string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return nil, fmt.Errorf("parse relay uri: %w", err)
+	}
+	if !strings.EqualFold(parsed.Scheme, "relay") {
+		return nil, fmt.Errorf("unsupported relay scheme %q", parsed.Scheme)
+	}
+
+	rawHops := parsed.Query()["hop"]
+	if len(rawHops) < 2 {
+		return nil, errors.New("relay requires at least two hops")
+	}
+
+	hops := make([]string, 0, len(rawHops))
+	for idx, encoded := range rawHops {
+		encoded = strings.TrimSpace(encoded)
+		if encoded == "" {
+			return nil, fmt.Errorf("relay hop %d is empty", idx+1)
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err != nil {
+			decoded, err = base64.StdEncoding.DecodeString(encoded)
+			if err != nil {
+				return nil, fmt.Errorf("decode relay hop %d: %w", idx+1, err)
+			}
+		}
+		hopURI := strings.TrimSpace(string(decoded))
+		if hopURI == "" {
+			return nil, fmt.Errorf("relay hop %d uri is empty", idx+1)
+		}
+		hops = append(hops, hopURI)
+	}
+
+	if len(hops) < 2 {
+		return nil, errors.New("relay requires at least two valid hops")
+	}
+	return hops, nil
+}
+
+func applyOutboundDetour(outbound *option.Outbound, detour string) error {
+	if outbound == nil || outbound.Options == nil {
+		return errors.New("outbound is nil")
+	}
+	wrapper, ok := outbound.Options.(option.DialerOptionsWrapper)
+	if !ok {
+		return fmt.Errorf("outbound type %s does not support detour", outbound.Type)
+	}
+	dialer := wrapper.TakeDialerOptions()
+	dialer.Detour = detour
+	wrapper.ReplaceDialerOptions(dialer)
+	return nil
 }
 
 func buildNodeOutbound(tag, rawURI string, skipCertVerify bool) (option.Outbound, error) {

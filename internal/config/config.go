@@ -958,7 +958,7 @@ func isBase64(s string) bool {
 
 // isProxyURI checks if a string is a valid proxy URI
 func isProxyURI(s string) bool {
-	schemes := []string{"vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://"}
+	schemes := []string{"vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "relay://"}
 	for _, scheme := range schemes {
 		if strings.HasPrefix(strings.ToLower(s), scheme) {
 			return true
@@ -969,7 +969,14 @@ func isProxyURI(s string) bool {
 
 // clashConfig represents a minimal Clash configuration for parsing proxies
 type clashConfig struct {
-	Proxies []clashProxy `yaml:"proxies"`
+	Proxies     []clashProxy      `yaml:"proxies"`
+	ProxyGroups []clashProxyGroup `yaml:"proxy-groups"`
+}
+
+type clashProxyGroup struct {
+	Name    string   `yaml:"name"`
+	Type    string   `yaml:"type"`
+	Proxies []string `yaml:"proxies"`
 }
 
 type clashProxy struct {
@@ -1017,18 +1024,109 @@ func parseClashYAML(content string) ([]NodeConfig, error) {
 		return nil, fmt.Errorf("parse clash yaml: %w", err)
 	}
 
-	var nodes []NodeConfig
+	nodes := make([]NodeConfig, 0, len(clash.Proxies)+len(clash.ProxyGroups))
+	proxyByName := make(map[string]string, len(clash.Proxies))
 	for _, proxy := range clash.Proxies {
 		uri := convertClashProxyToURI(proxy)
-		if uri != "" {
-			nodes = append(nodes, NodeConfig{
-				Name: proxy.Name,
-				URI:  uri,
-			})
+		if uri == "" {
+			continue
+		}
+		name := strings.TrimSpace(proxy.Name)
+		if name != "" {
+			if _, exists := proxyByName[name]; !exists {
+				proxyByName[name] = uri
+			}
+		}
+		nodes = append(nodes, NodeConfig{
+			Name: name,
+			URI:  uri,
+		})
+	}
+
+	groupsByName := make(map[string]clashProxyGroup, len(clash.ProxyGroups))
+	for _, group := range clash.ProxyGroups {
+		name := strings.TrimSpace(group.Name)
+		if name == "" {
+			continue
+		}
+		if _, exists := groupsByName[name]; !exists {
+			groupsByName[name] = group
 		}
 	}
 
+	for _, group := range clash.ProxyGroups {
+		if !strings.EqualFold(strings.TrimSpace(group.Type), "relay") {
+			continue
+		}
+		groupName := strings.TrimSpace(group.Name)
+		if groupName == "" {
+			continue
+		}
+		hops, ok := resolveClashRelayMember(groupName, proxyByName, groupsByName, map[string]bool{})
+		if !ok || len(hops) < 2 {
+			continue
+		}
+		relayURI, err := buildClashRelayURI(hops)
+		if err != nil {
+			continue
+		}
+		nodes = append(nodes, NodeConfig{
+			Name: groupName,
+			URI:  relayURI,
+		})
+	}
+
 	return nodes, nil
+}
+
+func resolveClashRelayMember(name string, proxyByName map[string]string, groupsByName map[string]clashProxyGroup, visiting map[string]bool) ([]string, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, false
+	}
+	if uri, ok := proxyByName[name]; ok {
+		return []string{uri}, true
+	}
+
+	group, ok := groupsByName[name]
+	if !ok || !strings.EqualFold(strings.TrimSpace(group.Type), "relay") {
+		return nil, false
+	}
+
+	key := strings.ToLower(name)
+	if visiting[key] {
+		return nil, false
+	}
+	visiting[key] = true
+	defer delete(visiting, key)
+
+	hops := make([]string, 0, len(group.Proxies))
+	for _, member := range group.Proxies {
+		resolved, ok := resolveClashRelayMember(member, proxyByName, groupsByName, visiting)
+		if !ok {
+			return nil, false
+		}
+		hops = append(hops, resolved...)
+	}
+	if len(hops) == 0 {
+		return nil, false
+	}
+	return hops, true
+}
+
+func buildClashRelayURI(hops []string) (string, error) {
+	if len(hops) < 2 {
+		return "", fmt.Errorf("relay requires at least two hops")
+	}
+	query := url.Values{}
+	for idx, hop := range hops {
+		hop = strings.TrimSpace(hop)
+		if hop == "" {
+			return "", fmt.Errorf("relay hop %d is empty", idx+1)
+		}
+		query.Add("hop", base64.RawURLEncoding.EncodeToString([]byte(hop)))
+	}
+	return "relay://chain?" + query.Encode(), nil
 }
 
 // convertClashProxyToURI converts a Clash proxy config to a standard URI

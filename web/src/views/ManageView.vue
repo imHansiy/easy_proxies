@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   addSubscription,
@@ -39,7 +39,10 @@ const settings = reactive<SettingsPayload>({
 })
 
 const nodes = ref<ConfigNode[]>([])
-const editableNodes = computed(() => nodes.value.filter((node) => String(node.source || '').toLowerCase() !== 'subscription'))
+
+function isSubscriptionNode(node: ConfigNode) {
+  return String(node.source || '').toLowerCase() === 'subscription'
+}
 
 const subscriptions = ref<SubscriptionItem[]>([])
 const subscriptionInput = ref('')
@@ -112,6 +115,10 @@ function openCreateNode() {
 }
 
 function openEditNode(node: ConfigNode) {
+  if (isSubscriptionNode(node)) {
+    ElMessage.warning('订阅节点为只读，请在订阅管理中更新')
+    return
+  }
   nodeDialog.visible = true
   nodeDialog.editingName = node.name
   nodeDialog.form = {
@@ -149,6 +156,10 @@ async function saveNode() {
 }
 
 async function removeNode(node: ConfigNode) {
+  if (isSubscriptionNode(node)) {
+    ElMessage.warning('订阅节点为只读，请在订阅管理中更新')
+    return
+  }
   await ElMessageBox.confirm(`确认删除节点 ${node.name || node.uri}？`, '确认删除', {
     type: 'warning',
   })
@@ -299,7 +310,10 @@ onBeforeUnmount(() => {
           <h3>配置节点</h3>
           <el-button type="primary" @click="openCreateNode">添加节点</el-button>
         </div>
-        <el-table v-loading="loading.nodes" :data="editableNodes" border stripe>
+        <div class="muted" style="margin-bottom:8px;">
+          显示全部节点（含订阅节点）；来源为 subscription 的节点仅可在「订阅管理」中维护。
+        </div>
+        <el-table v-loading="loading.nodes" :data="nodes" border stripe>
           <el-table-column prop="name" label="名称" min-width="140" />
           <el-table-column prop="uri" label="URI" min-width="280">
             <template #default="scope"><span class="monospace">{{ scope.row.uri }}</span></template>
@@ -308,7 +322,10 @@ onBeforeUnmount(() => {
           <el-table-column prop="source" label="来源" width="120" />
           <el-table-column label="操作" width="180" fixed="right">
             <template #default="scope">
-              <el-space>
+              <template v-if="isSubscriptionNode(scope.row)">
+                <span class="muted">订阅节点（只读）</span>
+              </template>
+              <el-space v-else>
                 <el-button size="small" @click="openEditNode(scope.row)">编辑</el-button>
                 <el-button size="small" type="danger" plain @click="removeNode(scope.row)">删除</el-button>
               </el-space>
