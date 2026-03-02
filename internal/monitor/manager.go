@@ -22,10 +22,12 @@ type Config struct {
 	Listen         string
 	ProbeTarget    string
 	Password       string
-	ProxyUsername  string // 代理池的用户名（用于导出）
-	ProxyPassword  string // 代理池的密码（用于导出）
-	ExternalIP     string // 外部 IP 地址，用于导出时替换 0.0.0.0
-	SkipCertVerify bool   // 全局跳过 SSL 证书验证
+	ProxyUsername  string   // 代理池的用户名（用于导出）
+	ProxyPassword  string   // 代理池的密码（用于导出）
+	ExternalIP     string   // 外部 IP 地址，用于导出时替换 0.0.0.0
+	SkipCertVerify bool     // 全局跳过 SSL 证书验证
+	FrontendDist   string   // 前端构建产物目录（可选）
+	AllowedOrigins []string // 允许的跨域 Origin
 }
 
 // NodeInfo is static metadata about a proxy entry.

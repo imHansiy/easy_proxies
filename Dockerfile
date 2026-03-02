@@ -1,3 +1,10 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /src/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web ./
+RUN npm run build
+
 FROM --platform=$BUILDPLATFORM golang:1.24 AS builder
 ARG TARGETARCH
 WORKDIR /src
@@ -16,6 +23,7 @@ RUN apt-get update \
     && chown -R easy:easy /var/lib/easy-proxies
 WORKDIR /var/lib/easy-proxies
 COPY --from=builder /src/easy-proxies /usr/local/bin/easy-proxies
+COPY --from=frontend /src/web/dist ./web/dist
 # Render Web Service may inject a dynamic PORT (commonly 10000).
 # Other ports are kept for generic Docker deployments.
 EXPOSE 10000 2323 9091 24000-24200

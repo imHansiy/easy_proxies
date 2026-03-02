@@ -138,10 +138,12 @@ type MultiPortConfig struct {
 
 // ManagementConfig controls the monitoring HTTP endpoint.
 type ManagementConfig struct {
-	Enabled     *bool  `yaml:"enabled" json:"enabled"`
-	Listen      string `yaml:"listen" json:"listen"`
-	ProbeTarget string `yaml:"probe_target" json:"probe_target"`
-	Password    string `yaml:"password" json:"password"` // WebUI 访问密码，为空则不需要密码
+	Enabled        *bool    `yaml:"enabled" json:"enabled"`
+	Listen         string   `yaml:"listen" json:"listen"`
+	ProbeTarget    string   `yaml:"probe_target" json:"probe_target"`
+	Password       string   `yaml:"password" json:"password"`               // WebUI 访问密码，为空则不需要密码
+	FrontendDist   string   `yaml:"frontend_dist" json:"frontend_dist"`     // 前端 dist 目录（可选）
+	AllowedOrigins []string `yaml:"allowed_origins" json:"allowed_origins"` // 允许跨域访问的 Origin 列表
 }
 
 // SubscriptionRefreshConfig controls subscription auto-refresh and reload settings.
@@ -212,6 +214,15 @@ func Load(path string) (*Config, error) {
 		cfg.NodesFile = filepath.Join(configDir, cfg.NodesFile)
 	}
 
+	// Resolve management.frontend_dist path relative to config file directory
+	if cfg.Management.FrontendDist != "" && !filepath.IsAbs(cfg.Management.FrontendDist) {
+		configDir := "."
+		if strings.TrimSpace(path) != "" {
+			configDir = filepath.Dir(path)
+		}
+		cfg.Management.FrontendDist = filepath.Join(configDir, cfg.Management.FrontendDist)
+	}
+
 	if err := cfg.ApplyEnvOverrides(); err != nil {
 		return nil, fmt.Errorf("apply env overrides: %w", err)
 	}
@@ -254,6 +265,11 @@ func (c *Config) normalize() error {
 	if c.Management.ProbeTarget == "" {
 		c.Management.ProbeTarget = "www.apple.com:80"
 	}
+	if strings.TrimSpace(c.Management.FrontendDist) == "" {
+		c.Management.FrontendDist = "web/dist"
+	}
+	c.Management.FrontendDist = strings.TrimSpace(c.Management.FrontendDist)
+	c.Management.AllowedOrigins = normalizeStringList(c.Management.AllowedOrigins)
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
@@ -448,6 +464,29 @@ func normalizePoolConfigDefaults(pool *PoolConfig) {
 	}
 }
 
+func normalizeStringList(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		normalized := strings.TrimSpace(item)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func applyPoolConfigFallback(pool *PoolConfig, fallback PoolConfig) {
 	if pool == nil {
 		return
@@ -626,6 +665,11 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	if c.Management.ProbeTarget == "" {
 		c.Management.ProbeTarget = "www.apple.com:80"
 	}
+	if strings.TrimSpace(c.Management.FrontendDist) == "" {
+		c.Management.FrontendDist = "web/dist"
+	}
+	c.Management.FrontendDist = strings.TrimSpace(c.Management.FrontendDist)
+	c.Management.AllowedOrigins = normalizeStringList(c.Management.AllowedOrigins)
 	if c.Management.Enabled == nil {
 		defaultEnabled := true
 		c.Management.Enabled = &defaultEnabled
@@ -1441,6 +1485,14 @@ func (c *Config) ApplyEnvOverrides() error {
 
 	if v, ok, _ := lookupEnvAlias("MANAGEMENT_PASSWORD"); ok {
 		c.Management.Password = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("MANAGEMENT_FRONTEND_DIST", "FRONTEND_DIST"); ok {
+		c.Management.FrontendDist = strings.TrimSpace(v)
+	}
+
+	if v, ok, _ := lookupEnvAlias("MANAGEMENT_ALLOWED_ORIGINS", "ALLOWED_ORIGINS"); ok {
+		c.Management.AllowedOrigins = normalizeStringList(parseSubscriptionEnvList(v))
 	}
 
 	listenerAddressOverridden := false

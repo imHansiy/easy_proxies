@@ -23,12 +23,13 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **Hybrid Mode**: Pool + Multi-Port simultaneously (`multi-port` shares state with the primary pool)
 
 ### Management & Monitoring
-- **Web Dashboard**: Real-time node status, latency probing, one-click export
+- **Web Dashboard**: Modern SPA dashboard (Vue 3 + Element Plus), real-time node status, latency probing, one-click export
 - **WebUI Settings**: Modify external_ip, probe_target, and proxy auth without editing config files
 - **Auto Health Check**: Initial check on startup, periodic checks every 5 minutes
 - **Smart Node Filtering**: Auto-hide unavailable nodes, sort by latency
 - **Domain-Level Blacklist**: Track blocked domains per node (e.g. Cloudflare-protected targets), with blacklist APIs and scheduled auto-recheck recovery
 - **Active Ban API**: Business systems can call `POST /api/nodes/ban` to ban only one target pool without impacting other pools
+- **Pool Manager UI/API**: Named business pools are managed independently (`/api/pools` + dedicated WebUI tab)
 - **Port Preservation**: Existing nodes keep their ports when adding/updating nodes
 
 ### Security & Performance (New!)
@@ -44,6 +45,7 @@ A proxy node pool management tool based on [sing-box](https://github.com/SagerNe
 - **Flexible Configuration**: Config file, node file, subscription links
 - **Database Persistence**: GORM-based storage with PostgreSQL / MySQL / SQLite for nodes, subscriptions, runtime settings, and runtime state
 - **Database-First Runtime Config**: All runtime config (except DB connection settings) can be managed in WebUI and persisted in DB
+- **Frontend/Backend Separation**: Vue SPA can run independently (dev server + API proxy) or be served by backend from dist
 - **Environment Variables**: Supports `DB_DRIVER`, `DB_DSN`, `DATABASE_URL`, etc.
 - **Multi-Architecture**: Docker images for both AMD64 and ARM64
 - **Password Protection**: WebUI authentication with secure session management
@@ -94,6 +96,25 @@ go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o eas
 ./easy-proxies
 ```
 
+**Frontend Development (Separated):**
+
+```bash
+cd web
+npm install
+VITE_PROXY_TARGET=http://127.0.0.1:9090 npm run dev
+```
+
+Build frontend assets for backend serving:
+
+```bash
+cd web
+npm run build
+```
+
+Notes:
+- Backend serves SPA from `management.frontend_dist` (default `web/dist`).
+- If dist is missing, backend falls back to the embedded legacy page.
+
 ## Configuration
 
 ### Basic Config
@@ -113,6 +134,9 @@ management:
   listen: 0.0.0.0:9090        # Web dashboard address
   probe_target: www.apple.com:80  # Latency probe target
   password: ""                # WebUI password (optional)
+  frontend_dist: ./web/dist   # SPA dist directory (optional)
+  # allowed_origins:
+  #   - http://localhost:5173
 
 # Unified Entry Listener
 listener:
@@ -468,6 +492,7 @@ In Multi-Port mode, ports are automatically allocated from `base_port`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/docs` | Minimal Key-Value API document |
 | GET | `/api/nodes/config` | List all configured nodes |
 | POST | `/api/nodes/config` | Add a new node |
 | PUT | `/api/nodes/config/:name` | Update node by name |
@@ -477,12 +502,19 @@ In Multi-Port mode, ports are automatically allocated from `base_port`.
 | PUT | `/api/settings` | Update settings (external_ip, probe_target) |
 | GET | `/api/runtime-config` | Get full runtime config (database) |
 | PUT | `/api/runtime-config` | Update full runtime config (database) |
+| GET | `/api/pools` | List named business pools |
+| POST | `/api/pools` | Create business pool |
+| PUT | `/api/pools/:name` | Update business pool |
+| DELETE | `/api/pools/:name` | Delete business pool |
 | POST | `/api/nodes/ban` | Ban nodes in a specific pool (`node_ip` supports IP or regex) |
 | GET | `/api/blacklist` | Get node domain blacklist list |
 
 **Request/Response Example:**
 
 ```bash
+# Minimal Key-Value API docs
+curl http://localhost:9090/api/docs
+
 # Add node
 curl -X POST http://localhost:9090/api/nodes/config \
   -H "Content-Type: application/json" \
@@ -501,6 +533,14 @@ curl -X POST http://localhost:9090/api/nodes/ban \
 
 # Get full runtime config (database)
 curl http://localhost:9090/api/runtime-config
+
+# List named pools
+curl http://localhost:9090/api/pools
+
+# Create one pool and reload immediately
+curl -X POST http://localhost:9090/api/pools \
+  -H "Content-Type: application/json" \
+  -d '{"pool":{"name":"openai","listener":{"address":"0.0.0.0","port":2324,"username":"user","password":"pass"},"pool":{"mode":"sequential","failure_threshold":2,"blacklist_duration":"2h","domain_failure_threshold":2,"domain_blacklist_duration":"12h","domain_recheck_interval":"10m","domain_recheck_timeout":"10s"}},"apply_now":true}'
 
 # Update runtime config and reload immediately
 curl -X PUT http://localhost:9090/api/runtime-config \
@@ -521,6 +561,12 @@ Notes:
 - This endpoint manages database-backed runtime config (excluding DB connection settings)
 - `PUT` saves to DB by default; set `apply_now=true` to trigger reload immediately
 - You can edit it in WebUI under the manage tab: "Runtime Config (Database)"
+
+`/api/pools` notes:
+- Business pools are isolated by `pool_name + listener.port`
+- `POST/PUT` supports `apply_now=true`
+- `DELETE /api/pools/:name?apply_now=true` is supported
+- Duration fields support both duration strings (`2h`, `30m`, `10s`) and integer nanoseconds
 
 ### Health Check Mechanism
 
@@ -627,6 +673,8 @@ Render-related env vars supported by the app:
 - `DB_DRIVER` / `DB_DSN`: database persistence
 - `LISTENER_USERNAME` / `LISTENER_PASSWORD`: proxy auth for the default/primary pool
 - `MANAGEMENT_PASSWORD`: WebUI login password
+- `MANAGEMENT_FRONTEND_DIST` / `FRONTEND_DIST`: override frontend dist directory
+- `MANAGEMENT_ALLOWED_ORIGINS` / `ALLOWED_ORIGINS`: comma/newline separated CORS origins for `/api/*`
 
 > Note: Render Web Services expose only one public HTTP port. `management` mode is recommended by default for health checks and operations.
 > If no nodes are present yet, the service starts in monitor-only mode. Add nodes/subscriptions via WebUI/API and click reload.

@@ -1061,18 +1061,20 @@ func buildRuntimeConfigFromConfig(cfg *config.Config) storage.RuntimeConfig {
 		return storage.RuntimeConfig{}
 	}
 	return storage.RuntimeConfig{
-		Mode:                cfg.Mode,
-		Listener:            cfg.Listener,
-		NamedPools:          append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
-		MultiPort:           cfg.MultiPort,
-		Pool:                cfg.Pool,
-		ManagementEnabled:   cloneBoolPointer(cfg.Management.Enabled),
-		ManagementListen:    cfg.Management.Listen,
-		ManagementPassword:  cfg.Management.Password,
-		SubscriptionRefresh: cfg.SubscriptionRefresh,
-		GeoIP:               cfg.GeoIP,
-		NodesFile:           cfg.NodesFile,
-		LogLevel:            cfg.LogLevel,
+		Mode:                     cfg.Mode,
+		Listener:                 cfg.Listener,
+		NamedPools:               append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
+		MultiPort:                cfg.MultiPort,
+		Pool:                     cfg.Pool,
+		ManagementEnabled:        cloneBoolPointer(cfg.Management.Enabled),
+		ManagementListen:         cfg.Management.Listen,
+		ManagementPassword:       cfg.Management.Password,
+		ManagementFrontendDist:   cfg.Management.FrontendDist,
+		ManagementAllowedOrigins: append([]string(nil), cfg.Management.AllowedOrigins...),
+		SubscriptionRefresh:      cfg.SubscriptionRefresh,
+		GeoIP:                    cfg.GeoIP,
+		NodesFile:                cfg.NodesFile,
+		LogLevel:                 cfg.LogLevel,
 	}
 }
 
@@ -1088,6 +1090,8 @@ func applyRuntimeConfigToConfig(cfg *config.Config, runtimeCfg storage.RuntimeCo
 	cfg.Management.Enabled = cloneBoolPointer(runtimeCfg.ManagementEnabled)
 	cfg.Management.Listen = runtimeCfg.ManagementListen
 	cfg.Management.Password = runtimeCfg.ManagementPassword
+	cfg.Management.FrontendDist = runtimeCfg.ManagementFrontendDist
+	cfg.Management.AllowedOrigins = append([]string(nil), runtimeCfg.ManagementAllowedOrigins...)
 	cfg.SubscriptionRefresh = runtimeCfg.SubscriptionRefresh
 	cfg.GeoIP = runtimeCfg.GeoIP
 	cfg.NodesFile = runtimeCfg.NodesFile
@@ -1120,6 +1124,7 @@ func (m *Manager) copyConfigLocked() *config.Config {
 	cloned.Subscriptions = append([]string(nil), m.cfg.Subscriptions...)
 	cloned.NamedPools = append([]config.NamedPoolConfig(nil), m.cfg.NamedPools...)
 	cloned.Management.Enabled = cloneBoolPointer(m.cfg.Management.Enabled)
+	cloned.Management.AllowedOrigins = append([]string(nil), m.cfg.Management.AllowedOrigins...)
 	cloned.Storage = m.cfg.Storage
 	cloned.SubscriptionRefresh = m.cfg.SubscriptionRefresh
 	cloned.GeoIP = m.cfg.GeoIP

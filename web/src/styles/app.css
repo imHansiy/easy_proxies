@@ -1,0 +1,51 @@
+:root {
+  color-scheme: light;
+  --ep-font-family: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  background: radial-gradient(circle at top left, #f3f8ff 0%, #f7fbf5 45%, #fffaf4 100%);
+  color: #1f2a37;
+}
+
+.page-wrap {
+  display: grid;
+  gap: 14px;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.card-title h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.muted {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.monospace {
+  font-family: "JetBrains Mono", "SF Mono", Menlo, Monaco, monospace;
+}
+
+.clickable-row {
+  cursor: pointer;
+}

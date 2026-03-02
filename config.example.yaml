@@ -88,6 +88,9 @@ management:
   listen: 0.0.0.0:9091                               # 监听地址
   probe_target: http://cp.cloudflare.com/generate_204  # 健康检查目标
   password: ""                                       # WebUI 访问密码，为空则不需要密码
+  frontend_dist: "./web/dist"                        # 前端构建目录（前后端分离时可选）
+  # allowed_origins:                                  # 允许跨域访问 API 的来源（可选）
+  #   - http://localhost:5173
 
 # ───────────────────────────────────────────────────────────────
 # 数据持久化（可选，支持 PostgreSQL / MySQL / SQLite）

@@ -23,12 +23,13 @@
 - **混合模式**: 同时启用节点池 + 多端口（多端口与主业务池共享状态）
 
 ### 管理与监控
-- **Web 监控面板**: 实时查看节点状态、延迟探测、一键导出节点
+- **Web 监控面板**: 现代化 SPA 界面（Vue 3 + Element Plus），实时查看节点状态、延迟探测、一键导出节点
 - **WebUI 设置**: 无需编辑配置文件即可修改 external_ip、probe_target 和代理认证
 - **自动健康检查**: 启动时自动检测所有节点可用性，定期（5分钟）检查节点状态
 - **智能节点过滤**: 自动过滤不可用节点，WebUI 和导出按延迟排序
 - **域名级黑名单**: 按节点记录不可访问域名（如 CF 盾牌），支持查看黑名单列表与后台定时复查自动恢复
 - **主动封控 API**: 第三方业务可调用 `POST /api/nodes/ban`，仅封禁指定业务池中的节点
+- **业务池管理 UI/API**: 命名业务池可独立管理（`/api/pools` + WebUI 独立页签）
 - **端口保留**: 添加/更新节点时，已有节点保持原有端口不变
 
 ### 安全与性能（新增！）
@@ -44,6 +45,7 @@
 - **灵活配置**: 支持配置文件、节点文件、订阅链接多种方式
 - **数据库持久化**: 基于 GORM 支持 PostgreSQL / MySQL / SQLite，节点、订阅、运行时配置与状态可持久化
 - **数据库优先配置**: 除数据库连接信息外，其他运行配置可在 WebUI 通过数据库读写与管理
+- **前后端分离**: 前端 SPA 可独立开发运行，也可构建后由后端托管 dist
 - **环境变量配置**: 支持 `DB_DRIVER`、`DB_DSN`、`DATABASE_URL` 等
 - **多架构支持**: Docker 镜像同时支持 AMD64 和 ARM64
 - **密码保护**: WebUI 支持密码认证，安全的会话管理
@@ -94,6 +96,25 @@ go build -tags "with_utls with_quic with_grpc with_wireguard with_gvisor" -o eas
 ./easy-proxies
 ```
 
+**前端独立开发（前后端分离）：**
+
+```bash
+cd web
+npm install
+VITE_PROXY_TARGET=http://127.0.0.1:9090 npm run dev
+```
+
+构建前端产物（供后端托管）：
+
+```bash
+cd web
+npm run build
+```
+
+说明：
+- 后端会从 `management.frontend_dist`（默认 `web/dist`）托管 SPA。
+- 若 dist 不存在，会回退到内置旧版页面。
+
 ## 配置说明
 
 ### 基础配置
@@ -113,6 +134,9 @@ management:
   listen: 0.0.0.0:9090        # Web 监控面板地址
   probe_target: www.apple.com:80  # 延迟探测目标
   password: ""                # WebUI 访问密码，为空则不需要密码（可选）
+  frontend_dist: ./web/dist   # SPA 前端构建目录（可选）
+  # allowed_origins:
+  #   - http://localhost:5173
 
 # 数据库持久化（可选，Render 部署推荐 PostgreSQL）
 storage:
@@ -483,6 +507,7 @@ Multi-Port 模式下，端口从 `base_port` 自动分配。
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
+| GET | `/api/docs` | Key-Value 极简 API 文档 |
 | GET | `/api/nodes/config` | 获取所有配置节点 |
 | POST | `/api/nodes/config` | 添加新节点 |
 | PUT | `/api/nodes/config/:name` | 按名称更新节点 |
@@ -492,12 +517,19 @@ Multi-Port 模式下，端口从 `base_port` 自动分配。
 | PUT | `/api/settings` | 更新设置（external_ip, probe_target） |
 | GET | `/api/runtime-config` | 获取完整运行配置（数据库） |
 | PUT | `/api/runtime-config` | 更新完整运行配置（数据库） |
+| GET | `/api/pools` | 获取命名业务池列表 |
+| POST | `/api/pools` | 创建业务池 |
+| PUT | `/api/pools/:name` | 更新业务池 |
+| DELETE | `/api/pools/:name` | 删除业务池 |
 | POST | `/api/nodes/ban` | 按业务池主动封禁节点（`node_ip` 支持 IP 或正则） |
 | GET | `/api/blacklist` | 获取节点域名黑名单列表 |
 
 **请求示例：**
 
 ```bash
+# 获取 Key-Value API 文档
+curl http://localhost:9090/api/docs
+
 # 添加节点
 curl -X POST http://localhost:9090/api/nodes/config \
   -H "Content-Type: application/json" \
@@ -516,6 +548,14 @@ curl -X POST http://localhost:9090/api/nodes/ban \
 
 # 获取完整运行配置（数据库）
 curl http://localhost:9090/api/runtime-config
+
+# 获取业务池列表
+curl http://localhost:9090/api/pools
+
+# 新建业务池并立即重载
+curl -X POST http://localhost:9090/api/pools \
+  -H "Content-Type: application/json" \
+  -d '{"pool":{"name":"openai","listener":{"address":"0.0.0.0","port":2324,"username":"user","password":"pass"},"pool":{"mode":"sequential","failure_threshold":2,"blacklist_duration":"2h","domain_failure_threshold":2,"domain_blacklist_duration":"12h","domain_recheck_interval":"10m","domain_recheck_timeout":"10s"}},"apply_now":true}'
 
 # 更新运行配置并立即重载
 curl -X PUT http://localhost:9090/api/runtime-config \
@@ -536,6 +576,12 @@ curl -X PUT http://localhost:9090/api/runtime-config \
 - 该接口用于数据库化运行配置（不包含数据库连接地址）
 - `PUT` 成功后默认仅保存到数据库，设置 `apply_now=true` 可立即触发重载
 - 推荐在 WebUI「节点管理」页的“运行配置（数据库）”面板直接编辑
+
+`/api/pools` 说明：
+- 业务池按 `pool_name + listener.port` 维度隔离
+- `POST/PUT` 支持 `apply_now=true`
+- 支持 `DELETE /api/pools/:name?apply_now=true`
+- 时长字段同时支持字符串（如 `2h`、`30m`、`10s`）与纳秒整数
 
 ### 健康检查机制
 
@@ -649,6 +695,8 @@ Render 运行环境可能会重建容器，建议启用 `storage.driver + storag
 - `DB_DRIVER` / `DB_DSN`：数据库配置
 - `LISTENER_USERNAME` / `LISTENER_PASSWORD`：默认/主业务池代理认证
 - `MANAGEMENT_PASSWORD`：管理面板登录密码
+- `MANAGEMENT_FRONTEND_DIST` / `FRONTEND_DIST`：覆盖前端 dist 目录
+- `MANAGEMENT_ALLOWED_ORIGINS` / `ALLOWED_ORIGINS`：`/api/*` 跨域允许来源（逗号或换行分隔）
 
 > 注意：Render Web Service 只公开一个 HTTP 端口。默认推荐 `management` 暴露模式（便于健康检查和管理）。
 > 若当前没有任何节点，服务会以仅管理模式启动。可在 WebUI/API 添加节点或订阅后再点击重载。

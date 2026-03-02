@@ -19,18 +19,20 @@ type Settings struct {
 
 // RuntimeConfig stores application runtime configuration except DB connection settings.
 type RuntimeConfig struct {
-	Mode                string                           `json:"mode"`
-	Listener            config.ListenerConfig            `json:"listener"`
-	NamedPools          []config.NamedPoolConfig         `json:"named_pools"`
-	MultiPort           config.MultiPortConfig           `json:"multi_port"`
-	Pool                config.PoolConfig                `json:"pool"`
-	ManagementEnabled   *bool                            `json:"management_enabled"`
-	ManagementListen    string                           `json:"management_listen"`
-	ManagementPassword  string                           `json:"management_password"`
-	SubscriptionRefresh config.SubscriptionRefreshConfig `json:"subscription_refresh"`
-	GeoIP               config.GeoIPConfig               `json:"geoip"`
-	NodesFile           string                           `json:"nodes_file"`
-	LogLevel            string                           `json:"log_level"`
+	Mode                     string                           `json:"mode"`
+	Listener                 config.ListenerConfig            `json:"listener"`
+	NamedPools               []config.NamedPoolConfig         `json:"named_pools"`
+	MultiPort                config.MultiPortConfig           `json:"multi_port"`
+	Pool                     config.PoolConfig                `json:"pool"`
+	ManagementEnabled        *bool                            `json:"management_enabled"`
+	ManagementListen         string                           `json:"management_listen"`
+	ManagementPassword       string                           `json:"management_password"`
+	ManagementFrontendDist   string                           `json:"management_frontend_dist"`
+	ManagementAllowedOrigins []string                         `json:"management_allowed_origins"`
+	SubscriptionRefresh      config.SubscriptionRefreshConfig `json:"subscription_refresh"`
+	GeoIP                    config.GeoIPConfig               `json:"geoip"`
+	NodesFile                string                           `json:"nodes_file"`
+	LogLevel                 string                           `json:"log_level"`
 }
 
 // NodeRuntimeState stores runtime health and activity state per node tag.

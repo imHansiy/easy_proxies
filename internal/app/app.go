@@ -141,13 +141,15 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 
 	monitorCfg := monitor.Config{
-		Enabled:       cfg.ManagementEnabled(),
-		Listen:        cfg.Management.Listen,
-		ProbeTarget:   cfg.Management.ProbeTarget,
-		Password:      cfg.Management.Password,
-		ProxyUsername: proxyUsername,
-		ProxyPassword: proxyPassword,
-		ExternalIP:    cfg.ExternalIP,
+		Enabled:        cfg.ManagementEnabled(),
+		Listen:         cfg.Management.Listen,
+		ProbeTarget:    cfg.Management.ProbeTarget,
+		Password:       cfg.Management.Password,
+		ProxyUsername:  proxyUsername,
+		ProxyPassword:  proxyPassword,
+		ExternalIP:     cfg.ExternalIP,
+		FrontendDist:   cfg.Management.FrontendDist,
+		AllowedOrigins: append([]string(nil), cfg.Management.AllowedOrigins...),
 	}
 
 	// Create and start BoxManager
@@ -267,18 +269,20 @@ func buildRuntimeConfig(cfg *config.Config) storage.RuntimeConfig {
 		return storage.RuntimeConfig{}
 	}
 	return storage.RuntimeConfig{
-		Mode:                cfg.Mode,
-		Listener:            cfg.Listener,
-		NamedPools:          append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
-		MultiPort:           cfg.MultiPort,
-		Pool:                cfg.Pool,
-		ManagementEnabled:   cloneBoolPtr(cfg.Management.Enabled),
-		ManagementListen:    cfg.Management.Listen,
-		ManagementPassword:  cfg.Management.Password,
-		SubscriptionRefresh: cfg.SubscriptionRefresh,
-		GeoIP:               cfg.GeoIP,
-		NodesFile:           cfg.NodesFile,
-		LogLevel:            cfg.LogLevel,
+		Mode:                     cfg.Mode,
+		Listener:                 cfg.Listener,
+		NamedPools:               append([]config.NamedPoolConfig(nil), cfg.NamedPools...),
+		MultiPort:                cfg.MultiPort,
+		Pool:                     cfg.Pool,
+		ManagementEnabled:        cloneBoolPtr(cfg.Management.Enabled),
+		ManagementListen:         cfg.Management.Listen,
+		ManagementPassword:       cfg.Management.Password,
+		ManagementFrontendDist:   cfg.Management.FrontendDist,
+		ManagementAllowedOrigins: append([]string(nil), cfg.Management.AllowedOrigins...),
+		SubscriptionRefresh:      cfg.SubscriptionRefresh,
+		GeoIP:                    cfg.GeoIP,
+		NodesFile:                cfg.NodesFile,
+		LogLevel:                 cfg.LogLevel,
 	}
 }
 
@@ -295,6 +299,8 @@ func applyRuntimeConfig(cfg *config.Config, runtimeCfg storage.RuntimeConfig) {
 	cfg.Management.Enabled = cloneBoolPtr(runtimeCfg.ManagementEnabled)
 	cfg.Management.Listen = runtimeCfg.ManagementListen
 	cfg.Management.Password = runtimeCfg.ManagementPassword
+	cfg.Management.FrontendDist = runtimeCfg.ManagementFrontendDist
+	cfg.Management.AllowedOrigins = append([]string(nil), runtimeCfg.ManagementAllowedOrigins...)
 	cfg.SubscriptionRefresh = runtimeCfg.SubscriptionRefresh
 	cfg.GeoIP = runtimeCfg.GeoIP
 	cfg.NodesFile = runtimeCfg.NodesFile

@@ -15,6 +15,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -136,9 +138,12 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/docs", s.handleAPIDocs)
 	mux.HandleFunc("/api/auth", s.handleAuth)
 	mux.HandleFunc("/api/settings", s.withAuth(s.handleSettings))
 	mux.HandleFunc("/api/runtime-config", s.withAuth(s.handleRuntimeConfig))
+	mux.HandleFunc("/api/pools", s.withAuth(s.handlePools))
+	mux.HandleFunc("/api/pools/", s.withAuth(s.handlePoolItem))
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
@@ -153,7 +158,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
 	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
-	s.srv = &http.Server{Addr: cfg.Listen, Handler: mux}
+	s.srv = &http.Server{Addr: cfg.Listen, Handler: s.withCORS(mux)}
 	return s
 }
 
@@ -265,6 +270,19 @@ func (s *Server) Shutdown(ctx context.Context) {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.serveFrontendDist(w, r) {
+		return
+	}
+
 	data, err := embeddedFS.ReadFile("assets/index.html")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -272,6 +290,112 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(data)
+}
+
+func (s *Server) serveFrontendDist(w http.ResponseWriter, r *http.Request) bool {
+	distDir := strings.TrimSpace(s.cfg.FrontendDist)
+	if distDir == "" {
+		return false
+	}
+	absDist, err := filepath.Abs(distDir)
+	if err != nil {
+		return false
+	}
+	if info, err := os.Stat(absDist); err != nil || !info.IsDir() {
+		return false
+	}
+
+	requestPath := strings.TrimPrefix(r.URL.Path, "/")
+	requestPath = filepath.Clean(requestPath)
+	if requestPath == "." || requestPath == string(filepath.Separator) {
+		requestPath = "index.html"
+	}
+
+	target := filepath.Join(absDist, requestPath)
+	if !pathInside(absDist, target) {
+		w.WriteHeader(http.StatusForbidden)
+		return true
+	}
+
+	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, target)
+		return true
+	}
+
+	indexFile := filepath.Join(absDist, "index.html")
+	if info, err := os.Stat(indexFile); err == nil && !info.IsDir() {
+		http.ServeFile(w, r, indexFile)
+		return true
+	}
+
+	return false
+}
+
+func pathInside(root, candidate string) bool {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+	if absCandidate == absRoot {
+		return true
+	}
+	prefix := absRoot + string(os.PathSeparator)
+	return strings.HasPrefix(absCandidate, prefix)
+}
+
+func normalizeOrigin(raw string) string {
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimSuffix(raw, "/")
+	return raw
+}
+
+func (s *Server) allowedOrigin(origin string) string {
+	origin = normalizeOrigin(origin)
+	if origin == "" {
+		return ""
+	}
+	for _, allow := range s.cfg.AllowedOrigins {
+		normalized := normalizeOrigin(allow)
+		if normalized == "*" {
+			return "*"
+		}
+		if strings.EqualFold(normalized, origin) {
+			return origin
+		}
+	}
+	return ""
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	if next == nil {
+		return http.NewServeMux()
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if allowed := s.allowedOrigin(origin); allowed != "" {
+				if allowed == "*" {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				} else {
+					w.Header().Set("Access-Control-Allow-Origin", allowed)
+					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+			}
+		}
+
+		if r.Method == http.MethodOptions && strings.HasPrefix(r.URL.Path, "/api/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
@@ -785,6 +909,53 @@ func (s *Server) handleAuth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAPIDocs exposes a minimal Key-Value API document.
+func (s *Server) handleAPIDocs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"service": "easy_proxies",
+		"format":  "key_value",
+		"auth":    "除 /api/auth 与 /api/docs 外，其余接口均需认证",
+		"endpoints": map[string]string{
+			"GET /api/docs":                           "API 文档（Key-Value）",
+			"POST /api/auth":                          "登录并获取 session token",
+			"GET /api/nodes":                          "获取节点监控列表",
+			"POST /api/nodes/{tag}/probe":             "探测单节点延迟",
+			"POST /api/nodes/{tag}/release":           "解除单节点拉黑状态",
+			"POST /api/nodes/ban":                     "按业务池主动封禁节点",
+			"POST /api/nodes/probe-all":               "批量探测节点（SSE）",
+			"GET /api/nodes/config":                   "读取配置节点列表",
+			"POST /api/nodes/config":                  "新增配置节点",
+			"PUT /api/nodes/config/{name}":            "更新配置节点",
+			"DELETE /api/nodes/config/{name}":         "删除配置节点",
+			"GET /api/debug":                          "读取调试统计",
+			"GET /api/blacklist":                      "读取节点域名黑名单",
+			"GET /api/export":                         "导出可用代理 URI",
+			"GET /api/settings":                       "读取动态设置",
+			"PUT /api/settings":                       "更新动态设置",
+			"GET /api/runtime-config":                 "读取完整运行配置（数据库）",
+			"PUT /api/runtime-config":                 "更新完整运行配置（数据库）",
+			"GET /api/pools":                          "读取命名业务池列表",
+			"POST /api/pools":                         "创建命名业务池",
+			"PUT /api/pools/{name}":                   "更新命名业务池",
+			"DELETE /api/pools/{name}":                "删除命名业务池",
+			"GET /api/subscription/status":            "读取订阅状态",
+			"POST /api/subscription/refresh":          "刷新全部订阅",
+			"GET /api/subscriptions":                  "读取订阅列表",
+			"POST /api/subscriptions":                 "新增订阅",
+			"PUT /api/subscriptions/{index}":          "更新订阅",
+			"DELETE /api/subscriptions/{index}":       "删除订阅",
+			"POST /api/subscriptions/{index}/refresh": "刷新指定订阅",
+			"GET /api/subscriptions/{index}/logs":     "读取指定订阅日志",
+			"POST /api/reload":                        "重载配置并重启代理实例",
+		},
+	})
+}
+
 // handleExport 导出所有可用代理池节点的 HTTP 代理 URI，每行一个
 // 在 hybrid 模式下，只导出 multi-port 格式（每节点独立端口）
 func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
@@ -891,6 +1062,388 @@ func (s *Server) handleRuntimeConfig(w http.ResponseWriter, r *http.Request) {
 			"reloaded":       reloaded,
 			"need_reload":    !reloaded,
 		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func runtimeNamedPools(runtimeCfg storage.RuntimeConfig) []config.NamedPoolConfig {
+	if len(runtimeCfg.NamedPools) > 0 {
+		pools := make([]config.NamedPoolConfig, len(runtimeCfg.NamedPools))
+		copy(pools, runtimeCfg.NamedPools)
+		return pools
+	}
+
+	poolCfg := runtimeCfg.Pool
+	if strings.TrimSpace(poolCfg.Mode) == "" {
+		poolCfg.Mode = "sequential"
+	}
+	return []config.NamedPoolConfig{{
+		Name:     "default",
+		Listener: runtimeCfg.Listener,
+		Pool:     poolCfg,
+	}}
+}
+
+func assignRuntimeNamedPools(runtimeCfg *storage.RuntimeConfig, pools []config.NamedPoolConfig) {
+	if runtimeCfg == nil {
+		return
+	}
+	runtimeCfg.NamedPools = make([]config.NamedPoolConfig, len(pools))
+	copy(runtimeCfg.NamedPools, pools)
+	if len(pools) > 0 {
+		runtimeCfg.Listener = pools[0].Listener
+		runtimeCfg.Pool = pools[0].Pool
+	}
+}
+
+func findPoolIndex(pools []config.NamedPoolConfig, name string) int {
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return -1
+	}
+	for idx := range pools {
+		if strings.EqualFold(strings.TrimSpace(pools[idx].Name), target) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func normalizeNamedPoolInput(pool *config.NamedPoolConfig) {
+	if pool == nil {
+		return
+	}
+	pool.Name = strings.TrimSpace(pool.Name)
+	pool.Listener.Address = strings.TrimSpace(pool.Listener.Address)
+	pool.Listener.Username = strings.TrimSpace(pool.Listener.Username)
+	pool.Listener.Password = strings.TrimSpace(pool.Listener.Password)
+	if strings.TrimSpace(pool.Pool.Mode) == "" {
+		pool.Pool.Mode = "sequential"
+	}
+}
+
+func parseApplyNow(raw string) bool {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false
+	}
+	return parsed
+}
+
+type durationJSONValue struct {
+	Duration time.Duration
+}
+
+func (d *durationJSONValue) UnmarshalJSON(data []byte) error {
+	if d == nil {
+		return errors.New("duration target is nil")
+	}
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		d.Duration = 0
+		return nil
+	}
+
+	if strings.HasPrefix(raw, "\"") {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		text = strings.TrimSpace(text)
+		if text == "" {
+			d.Duration = 0
+			return nil
+		}
+		parsed, err := time.ParseDuration(text)
+		if err != nil {
+			return fmt.Errorf("invalid duration %q: %w", text, err)
+		}
+		d.Duration = parsed
+		return nil
+	}
+
+	var number json.Number
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if err := decoder.Decode(&number); err != nil {
+		return err
+	}
+	if i64, err := number.Int64(); err == nil {
+		d.Duration = time.Duration(i64)
+		return nil
+	}
+	f64, err := number.Float64()
+	if err != nil {
+		return err
+	}
+	d.Duration = time.Duration(int64(f64))
+	return nil
+}
+
+type poolPolicyMutationRequest struct {
+	Mode                    string            `json:"mode"`
+	FailureThreshold        int               `json:"failure_threshold"`
+	BlacklistDuration       durationJSONValue `json:"blacklist_duration"`
+	DomainFailureThreshold  int               `json:"domain_failure_threshold"`
+	DomainBlacklistDuration durationJSONValue `json:"domain_blacklist_duration"`
+	DomainRecheckInterval   durationJSONValue `json:"domain_recheck_interval"`
+	DomainRecheckTimeout    durationJSONValue `json:"domain_recheck_timeout"`
+}
+
+type namedPoolMutationRequest struct {
+	Name     string                    `json:"name"`
+	Listener config.ListenerConfig     `json:"listener"`
+	Pool     poolPolicyMutationRequest `json:"pool"`
+}
+
+func (req namedPoolMutationRequest) toConfig() config.NamedPoolConfig {
+	return config.NamedPoolConfig{
+		Name:     req.Name,
+		Listener: req.Listener,
+		Pool: config.PoolConfig{
+			Mode:                    req.Pool.Mode,
+			FailureThreshold:        req.Pool.FailureThreshold,
+			BlacklistDuration:       req.Pool.BlacklistDuration.Duration,
+			DomainFailureThreshold:  req.Pool.DomainFailureThreshold,
+			DomainBlacklistDuration: req.Pool.DomainBlacklistDuration.Duration,
+			DomainRecheckInterval:   req.Pool.DomainRecheckInterval.Duration,
+			DomainRecheckTimeout:    req.Pool.DomainRecheckTimeout.Duration,
+		},
+	}
+}
+
+type poolMutationRequest struct {
+	Pool     namedPoolMutationRequest `json:"pool"`
+	ApplyNow bool                     `json:"apply_now"`
+}
+
+func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
+	runtimeMgr, ok := s.nodeMgr.(runtimeConfigManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "业务池管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		runtimeCfg, err := runtimeMgr.GetRuntimeConfig(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		pools := runtimeNamedPools(runtimeCfg)
+		writeJSON(w, map[string]any{
+			"pools":  pools,
+			"count":  len(pools),
+			"legacy": len(runtimeCfg.NamedPools) == 0,
+		})
+	case http.MethodPost:
+		var req poolMutationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("请求格式错误: %v", err)})
+			return
+		}
+		reqPool := req.Pool.toConfig()
+		normalizeNamedPoolInput(&reqPool)
+		if reqPool.Name == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "pool.name 不能为空"})
+			return
+		}
+		if reqPool.Listener.Port == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "pool.listener.port 不能为空"})
+			return
+		}
+
+		runtimeCfg, err := runtimeMgr.GetRuntimeConfig(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+
+		pools := runtimeNamedPools(runtimeCfg)
+		if findPoolIndex(pools, reqPool.Name) >= 0 {
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]any{"error": "业务池名称已存在"})
+			return
+		}
+		pools = append(pools, reqPool)
+		assignRuntimeNamedPools(&runtimeCfg, pools)
+
+		updated, err := runtimeMgr.UpdateRuntimeConfig(r.Context(), runtimeCfg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+
+		reloaded := false
+		if req.ApplyNow {
+			if err := s.nodeMgr.TriggerReload(r.Context()); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{
+					"error":       fmt.Sprintf("业务池已保存，但重载失败: %v", err),
+					"saved":       true,
+					"need_reload": true,
+					"pools":       runtimeNamedPools(updated),
+				})
+				return
+			}
+			reloaded = true
+		}
+
+		writeJSON(w, map[string]any{
+			"message":     "业务池已创建",
+			"pool":        reqPool,
+			"pools":       runtimeNamedPools(updated),
+			"saved":       true,
+			"reloaded":    reloaded,
+			"need_reload": !reloaded,
+		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handlePoolItem(w http.ResponseWriter, r *http.Request) {
+	runtimeMgr, ok := s.nodeMgr.(runtimeConfigManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "业务池管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	namePart := strings.TrimPrefix(r.URL.Path, "/api/pools/")
+	poolName, err := url.PathUnescape(namePart)
+	if err != nil || strings.TrimSpace(poolName) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "业务池名称无效"})
+		return
+	}
+	poolName = strings.TrimSpace(poolName)
+
+	runtimeCfg, err := runtimeMgr.GetRuntimeConfig(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		writeJSON(w, map[string]any{"error": err.Error()})
+		return
+	}
+
+	pools := runtimeNamedPools(runtimeCfg)
+	targetIdx := findPoolIndex(pools, poolName)
+	if targetIdx < 0 {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, map[string]any{"error": "业务池不存在"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		var req poolMutationRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": fmt.Sprintf("请求格式错误: %v", err)})
+			return
+		}
+		reqPool := req.Pool.toConfig()
+		normalizeNamedPoolInput(&reqPool)
+		if reqPool.Name == "" {
+			reqPool.Name = poolName
+		}
+		if reqPool.Listener.Port == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "pool.listener.port 不能为空"})
+			return
+		}
+
+		if existingIdx := findPoolIndex(pools, reqPool.Name); existingIdx >= 0 && existingIdx != targetIdx {
+			w.WriteHeader(http.StatusConflict)
+			writeJSON(w, map[string]any{"error": "业务池名称已存在"})
+			return
+		}
+
+		pools[targetIdx] = reqPool
+		assignRuntimeNamedPools(&runtimeCfg, pools)
+
+		updated, err := runtimeMgr.UpdateRuntimeConfig(r.Context(), runtimeCfg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+
+		reloaded := false
+		if req.ApplyNow {
+			if err := s.nodeMgr.TriggerReload(r.Context()); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{
+					"error":       fmt.Sprintf("业务池已保存，但重载失败: %v", err),
+					"saved":       true,
+					"need_reload": true,
+					"pools":       runtimeNamedPools(updated),
+				})
+				return
+			}
+			reloaded = true
+		}
+
+		writeJSON(w, map[string]any{
+			"message":     "业务池已更新",
+			"pool":        reqPool,
+			"pools":       runtimeNamedPools(updated),
+			"saved":       true,
+			"reloaded":    reloaded,
+			"need_reload": !reloaded,
+		})
+
+	case http.MethodDelete:
+		if len(pools) <= 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "至少保留一个业务池"})
+			return
+		}
+		applyNow := parseApplyNow(r.URL.Query().Get("apply_now"))
+		removed := pools[targetIdx]
+		pools = append(pools[:targetIdx], pools[targetIdx+1:]...)
+		assignRuntimeNamedPools(&runtimeCfg, pools)
+
+		updated, err := runtimeMgr.UpdateRuntimeConfig(r.Context(), runtimeCfg)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+
+		reloaded := false
+		if applyNow {
+			if err := s.nodeMgr.TriggerReload(r.Context()); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				writeJSON(w, map[string]any{
+					"error":       fmt.Sprintf("业务池已删除，但重载失败: %v", err),
+					"saved":       true,
+					"need_reload": true,
+					"pools":       runtimeNamedPools(updated),
+				})
+				return
+			}
+			reloaded = true
+		}
+
+		writeJSON(w, map[string]any{
+			"message":     "业务池已删除",
+			"removed":     removed,
+			"pools":       runtimeNamedPools(updated),
+			"saved":       true,
+			"reloaded":    reloaded,
+			"need_reload": !reloaded,
+		})
+
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
