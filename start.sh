@@ -1,2 +1,5 @@
 #!/bin/bash
-docker compose pull && docker compose down && docker compose up -d
+set -euo pipefail
+
+docker compose down
+docker compose up -d --build

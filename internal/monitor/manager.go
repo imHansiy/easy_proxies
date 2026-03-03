@@ -37,6 +37,7 @@ type NodeInfo struct {
 	PoolName      string `json:"pool_name,omitempty"`
 	Name          string `json:"name"`
 	URI           string `json:"uri"`
+	NodeIP        string `json:"node_ip,omitempty"`
 	Mode          string `json:"mode"`
 	ListenAddress string `json:"listen_address,omitempty"`
 	Port          uint16 `json:"port,omitempty"`
@@ -88,6 +89,7 @@ type RuntimeStateStore interface {
 // NodeRuntimeState is the persistence representation for node runtime state.
 type NodeRuntimeState struct {
 	Tag              string
+	NodeIP           string
 	FailureCount     int
 	SuccessCount     int64
 	Blacklisted      bool
@@ -139,6 +141,42 @@ func (e *entry) updateLocation(region, country string) {
 		e.info.Country = strings.TrimSpace(country)
 	}
 	e.mu.Unlock()
+}
+
+func (e *entry) updateNodeIP(ip string) (changed bool, previous string, current string, released bool) {
+	current = strings.TrimSpace(ip)
+	if current == "" {
+		return false, "", "", false
+	}
+
+	var (
+		tag       string
+		releaseFn releaseFunc
+	)
+
+	e.mu.Lock()
+	previous = strings.TrimSpace(e.info.NodeIP)
+	if previous == current {
+		e.mu.Unlock()
+		return false, previous, current, false
+	}
+
+	e.info.NodeIP = current
+	tag = e.info.Tag
+	if previous != "" {
+		releaseFn = e.release
+	}
+	e.mu.Unlock()
+
+	if releaseFn != nil {
+		releaseFn()
+		released = true
+	}
+
+	if e.owner != nil {
+		e.owner.enqueuePersist(tag)
+	}
+	return true, previous, current, released
 }
 
 // Manager aggregates all node states for the UI/API.
@@ -363,6 +401,11 @@ func (m *Manager) Register(info NodeInfo) *EntryHandle {
 		m.restoreRuntimeStateLocked(e)
 		m.nodes[info.Tag] = e
 	} else {
+		if strings.TrimSpace(e.info.NodeIP) != "" {
+			info.NodeIP = e.info.NodeIP
+		} else if strings.TrimSpace(info.NodeIP) == "" {
+			info.NodeIP = e.info.NodeIP
+		}
 		e.info = info
 	}
 	return &EntryHandle{ref: e}
@@ -392,6 +435,9 @@ func (m *Manager) restoreRuntimeStateLocked(e *entry) {
 	e.lastProbe = state.LastProbeLatency
 	e.available = state.Available
 	e.initialCheckDone = state.InitialCheckDone
+	if strings.TrimSpace(state.NodeIP) != "" {
+		e.info.NodeIP = strings.TrimSpace(state.NodeIP)
+	}
 }
 
 func (m *Manager) runPersistLoop() {
@@ -434,6 +480,7 @@ func (m *Manager) persistTag(tag string) {
 	e.mu.RLock()
 	state := NodeRuntimeState{
 		Tag:              e.info.Tag,
+		NodeIP:           e.info.NodeIP,
 		FailureCount:     e.failure,
 		SuccessCount:     e.success,
 		Blacklisted:      e.blacklist,
@@ -847,6 +894,15 @@ func (h *EntryHandle) UpdateLocation(region, country string) {
 		return
 	}
 	h.ref.updateLocation(region, country)
+}
+
+// UpdateNodeIP updates node exit IP metadata for UI display.
+// When IP changes, it also clears blacklist via release hook.
+func (h *EntryHandle) UpdateNodeIP(ip string) (changed bool, previous string, current string, released bool) {
+	if h == nil || h.ref == nil {
+		return false, "", "", false
+	}
+	return h.ref.updateNodeIP(ip)
 }
 
 // MarkInitialCheckDone marks the initial health check as completed.

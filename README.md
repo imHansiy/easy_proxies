@@ -113,7 +113,7 @@ npm run build
 
 Notes:
 - Backend serves SPA from `management.frontend_dist` (default `web/dist`).
-- If dist is missing, backend falls back to the embedded legacy page.
+- If dist is missing, backend returns `503` and asks you to build the frontend.
 
 ## Configuration
 

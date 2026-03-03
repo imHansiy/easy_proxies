@@ -13,6 +13,7 @@ export interface DomainBlock {
 export interface NodeSnapshot {
   tag: string
   node_tag?: string
+  node_ip?: string
   pool_name?: string
   name: string
   uri: string
@@ -110,6 +111,7 @@ export interface SubscriptionLog {
 export interface ConfigNode {
   name: string
   uri: string
+  node_ip?: string
   port?: number
   username?: string
   password?: string

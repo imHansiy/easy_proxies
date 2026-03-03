@@ -113,7 +113,7 @@ npm run build
 
 说明：
 - 后端会从 `management.frontend_dist`（默认 `web/dist`）托管 SPA。
-- 若 dist 不存在，会回退到内置旧版页面。
+- 若 dist 不存在，后端会返回 `503` 并提示先构建前端。
 
 ## 配置说明
 

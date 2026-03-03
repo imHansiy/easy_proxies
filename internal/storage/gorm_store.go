@@ -67,6 +67,7 @@ func (settingsModel) TableName() string { return "ep_settings" }
 
 type nodeRuntimeModel struct {
 	Tag              string `gorm:"primaryKey;type:text"`
+	NodeIP           string `gorm:"type:text;not null;default:''"`
 	FailureCount     int    `gorm:"not null;default:0"`
 	SuccessCount     int64  `gorm:"not null;default:0"`
 	Blacklisted      bool   `gorm:"not null;default:false"`
@@ -304,6 +305,7 @@ func (s *GORMStore) LoadNodeRuntimeState(ctx context.Context, tag string) (NodeR
 	}
 	return NodeRuntimeState{
 		Tag:              row.Tag,
+		NodeIP:           row.NodeIP,
 		FailureCount:     row.FailureCount,
 		SuccessCount:     row.SuccessCount,
 		Blacklisted:      row.Blacklisted,
@@ -320,6 +322,7 @@ func (s *GORMStore) LoadNodeRuntimeState(ctx context.Context, tag string) (NodeR
 func (s *GORMStore) SaveNodeRuntimeState(ctx context.Context, state NodeRuntimeState) error {
 	row := nodeRuntimeModel{
 		Tag:              state.Tag,
+		NodeIP:           state.NodeIP,
 		FailureCount:     state.FailureCount,
 		SuccessCount:     state.SuccessCount,
 		Blacklisted:      state.Blacklisted,
@@ -335,7 +338,7 @@ func (s *GORMStore) SaveNodeRuntimeState(ctx context.Context, state NodeRuntimeS
 	return s.db.WithContext(ctx).Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "tag"}},
 		DoUpdates: clause.AssignmentColumns([]string{
-			"failure_count", "success_count", "blacklisted", "blacklisted_until",
+			"node_ip", "failure_count", "success_count", "blacklisted", "blacklisted_until",
 			"last_error", "last_failure", "last_success", "last_probe_latency",
 			"available", "initial_check_done", "updated_at",
 		}),

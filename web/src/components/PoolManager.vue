@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createPool, deletePool, getNodes, listPools, updatePool } from '../api/client'
+import { createPool, deletePool, getNodes, listPools, releaseNode, updatePool } from '../api/client'
 import type { NamedPoolConfig, NodeSnapshot } from '../types/api'
 import { formatDurationNs, formatRelativeTime, parseDurationNs } from '../utils/time'
 
@@ -18,6 +18,26 @@ const dialog = reactive({
   editingName: '',
   form: createDefaultPool('default', 2323),
 })
+
+type BlacklistedNodeGroup = {
+  key: string
+  node_ip: string
+  pool_names: string[]
+  nodes: NodeSnapshot[]
+  blacklisted_until: string
+  last_error: string
+  active_connections: number
+  node_count: number
+}
+
+function toTimestamp(raw: string): number {
+  const value = Date.parse(raw || '')
+  return Number.isNaN(value) ? 0 : value
+}
+
+function normalizePoolName(poolName?: string): string {
+  return (poolName || 'default').trim() || 'default'
+}
 
 function createDefaultPool(name: string, port: number): NamedPoolConfig {
   return {
@@ -44,16 +64,61 @@ const blacklistedNodes = computed(() =>
   nodes.value
     .filter((item) => item.blacklisted)
     .sort((a, b) => {
-      const ta = Date.parse(a.blacklisted_until || '') || 0
-      const tb = Date.parse(b.blacklisted_until || '') || 0
+      const ta = toTimestamp(a.blacklisted_until || '')
+      const tb = toTimestamp(b.blacklisted_until || '')
       return tb - ta
     }),
 )
 
+const groupedBlacklistedNodes = computed<BlacklistedNodeGroup[]>(() => {
+  const grouped = new Map<string, BlacklistedNodeGroup>()
+
+  for (const node of blacklistedNodes.value) {
+    const ip = String(node.node_ip || '').trim()
+    const key = ip ? `ip:${ip}` : `tag:${node.tag}`
+    const poolName = normalizePoolName(node.pool_name)
+
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        node_ip: ip || '-',
+        pool_names: [],
+        nodes: [],
+        blacklisted_until: node.blacklisted_until,
+        last_error: '',
+        active_connections: 0,
+        node_count: 0,
+      })
+    }
+
+    const row = grouped.get(key)!
+    row.nodes.push(node)
+    row.node_count += 1
+    row.active_connections += Number(node.active_connections || 0)
+    if (!row.pool_names.includes(poolName)) {
+      row.pool_names.push(poolName)
+    }
+    if (toTimestamp(node.blacklisted_until || '') > toTimestamp(row.blacklisted_until || '')) {
+      row.blacklisted_until = node.blacklisted_until
+    }
+    if (!row.last_error && node.last_error) {
+      row.last_error = node.last_error
+    }
+  }
+
+  const rows = Array.from(grouped.values())
+  for (const row of rows) {
+    row.pool_names.sort((a, b) => a.localeCompare(b))
+    row.nodes.sort((a, b) => toTimestamp(b.blacklisted_until || '') - toTimestamp(a.blacklisted_until || ''))
+  }
+  rows.sort((a, b) => toTimestamp(b.blacklisted_until || '') - toTimestamp(a.blacklisted_until || ''))
+  return rows
+})
+
 const blacklistCountByPool = computed(() => {
   const map = new Map<string, number>()
   for (const item of blacklistedNodes.value) {
-    const poolName = (item.pool_name || 'default').trim() || 'default'
+    const poolName = normalizePoolName(item.pool_name)
     map.set(poolName, (map.get(poolName) || 0) + 1)
   }
   return map
@@ -64,13 +129,11 @@ const poolFilterOptions = computed(() => {
   return ['all', ...names]
 })
 
-const visibleBlacklistedNodes = computed(() => {
+const visibleGroupedBlacklistedNodes = computed(() => {
   if (blacklistFilterPool.value === 'all') {
-    return blacklistedNodes.value
+    return groupedBlacklistedNodes.value
   }
-  return blacklistedNodes.value.filter(
-    (item) => ((item.pool_name || 'default').trim() || 'default') === blacklistFilterPool.value,
-  )
+  return groupedBlacklistedNodes.value.filter((item) => item.pool_names.includes(blacklistFilterPool.value))
 })
 
 const prettyRows = computed(() =>
@@ -190,6 +253,56 @@ function openEdit(row: NamedPoolConfig) {
   dialog.visible = true
 }
 
+async function releaseBlacklistedNode(node: NodeSnapshot) {
+  const tag = String(node.tag || '').trim()
+  if (!tag) return
+
+  const title = String(node.name || node.node_tag || tag).trim()
+  try {
+    await ElMessageBox.confirm(`确认解除节点 ${title} 的拉黑状态？`, '解除拉黑', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  try {
+    await releaseNode(tag)
+    ElMessage.success('节点已解封')
+    await load()
+    window.dispatchEvent(new CustomEvent('ep:refresh'))
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.error || error?.message || '节点解封失败')
+  }
+}
+
+async function releaseBlacklistedGroup(row: BlacklistedNodeGroup) {
+  const tags = row.nodes.map((item) => String(item.tag || '').trim()).filter(Boolean)
+  if (tags.length === 0) {
+    ElMessage.warning('没有可解封节点')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`确认解封 IP ${row.node_ip} 下 ${tags.length} 个拉黑节点？`, '批量解封', { type: 'warning' })
+  } catch {
+    return
+  }
+
+  const results = await Promise.allSettled(tags.map((tag) => releaseNode(tag)))
+  const success = results.filter((item) => item.status === 'fulfilled').length
+  const failed = tags.length - success
+
+  if (failed === 0) {
+    ElMessage.success(`已解封 ${success} 个节点`)
+  } else if (success === 0) {
+    ElMessage.error(`解封失败，共 ${failed} 个节点`)
+  } else {
+    ElMessage.warning(`部分解封成功：成功 ${success}，失败 ${failed}`)
+  }
+
+  await load()
+  window.dispatchEvent(new CustomEvent('ep:refresh'))
+}
+
 async function save(applyNow: boolean) {
   saving.value = true
   try {
@@ -305,18 +418,58 @@ onMounted(load)
           </el-space>
         </div>
 
-        <el-empty v-if="visibleBlacklistedNodes.length === 0" description="当前筛选下暂无被拉黑节点" />
-        <el-table v-else :data="visibleBlacklistedNodes" border stripe>
-          <el-table-column label="业务池" min-width="160">
+        <el-empty v-if="visibleGroupedBlacklistedNodes.length === 0" description="当前筛选下暂无被拉黑节点" />
+        <el-table v-else :data="visibleGroupedBlacklistedNodes" row-key="key" border stripe>
+          <el-table-column type="expand" width="56">
             <template #default="scope">
-              <el-tag type="warning">{{ scope.row.pool_name || 'default' }}</el-tag>
+              <el-table :data="scope.row.nodes" size="small" border style="margin: 8px 0; width: 100%;">
+                <el-table-column label="业务池" min-width="120">
+                  <template #default="inner">
+                    <el-tag type="warning">{{ inner.row.pool_name || 'default' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="节点" min-width="220">
+                  <template #default="inner">
+                    <div style="display:grid; gap:2px;">
+                      <strong>{{ inner.row.name || inner.row.node_tag || inner.row.tag }}</strong>
+                      <span class="muted monospace">{{ inner.row.node_tag || inner.row.tag }}</span>
+                    </div>
+                  </template>
+                </el-table-column>
+                <el-table-column label="拉黑到期" min-width="220">
+                  <template #default="inner">{{ formatBlacklistedUntil(inner.row.blacklisted_until) }}</template>
+                </el-table-column>
+                <el-table-column label="最近错误" min-width="300" show-overflow-tooltip>
+                  <template #default="inner">{{ inner.row.last_error || '-' }}</template>
+                </el-table-column>
+                <el-table-column label="操作" width="100" fixed="right">
+                  <template #default="inner">
+                    <el-button size="small" type="primary" plain @click="releaseBlacklistedNode(inner.row)">解封</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
             </template>
           </el-table-column>
-          <el-table-column label="节点" min-width="220">
+          <el-table-column label="节点IP" min-width="170">
+            <template #default="scope">
+              <span class="monospace">{{ scope.row.node_ip }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="涉及业务池" min-width="220">
+            <template #default="scope">
+              <el-space wrap>
+                <el-tag v-for="pool in scope.row.pool_names" :key="pool" type="warning">{{ pool }}</el-tag>
+              </el-space>
+            </template>
+          </el-table-column>
+          <el-table-column label="被拉黑实例" width="110" align="center">
+            <template #default="scope">{{ scope.row.node_count }}</template>
+          </el-table-column>
+          <el-table-column label="节点摘要" min-width="240">
             <template #default="scope">
               <div style="display:grid; gap:2px;">
-                <strong>{{ scope.row.name || scope.row.node_tag || scope.row.tag }}</strong>
-                <span class="muted monospace">{{ scope.row.node_tag || scope.row.tag }}</span>
+                <strong>{{ scope.row.nodes.length > 0 ? (scope.row.nodes[0].name || scope.row.nodes[0].node_tag || scope.row.nodes[0].tag) : '-' }}</strong>
+                <span class="muted">展开查看 {{ scope.row.node_count }} 条节点记录</span>
               </div>
             </template>
           </el-table-column>
@@ -328,6 +481,11 @@ onMounted(load)
           </el-table-column>
           <el-table-column label="活跃连接" width="100" align="center">
             <template #default="scope">{{ scope.row.active_connections || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="120" fixed="right">
+            <template #default="scope">
+              <el-button size="small" type="primary" @click="releaseBlacklistedGroup(scope.row)">全部解封</el-button>
+            </template>
           </el-table-column>
         </el-table>
       </el-tab-pane>

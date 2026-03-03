@@ -1,6 +1,9 @@
 services:
   easy-proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: easy-proxies:local
     container_name: easy-proxies
     restart: unless-stopped
     env_file:

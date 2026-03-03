@@ -1291,6 +1291,7 @@ func (a monitorRuntimeStoreAdapter) LoadNodeRuntimeState(ctx context.Context, ta
 	}
 	return monitor.NodeRuntimeState{
 		Tag:              state.Tag,
+		NodeIP:           state.NodeIP,
 		FailureCount:     state.FailureCount,
 		SuccessCount:     state.SuccessCount,
 		Blacklisted:      state.Blacklisted,
@@ -1310,6 +1311,7 @@ func (a monitorRuntimeStoreAdapter) SaveNodeRuntimeState(ctx context.Context, st
 	}
 	return a.store.SaveNodeRuntimeState(ctx, storage.NodeRuntimeState{
 		Tag:              state.Tag,
+		NodeIP:           state.NodeIP,
 		FailureCount:     state.FailureCount,
 		SuccessCount:     state.SuccessCount,
 		Blacklisted:      state.Blacklisted,

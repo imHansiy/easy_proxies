@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
-	"embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -28,9 +27,6 @@ import (
 	"easy_proxies/internal/storage"
 	"golang.org/x/sync/semaphore"
 )
-
-//go:embed assets/index.html
-var embeddedFS embed.FS
 
 // Session represents a user session with expiration.
 type Session struct {
@@ -283,13 +279,14 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := embeddedFS.ReadFile("assets/index.html")
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	setNoCacheHeaders(w)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	distDir := strings.TrimSpace(s.cfg.FrontendDist)
+	if distDir == "" {
+		distDir = "web/dist"
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write(data)
+	_, _ = fmt.Fprintf(w, "frontend assets not found at %q; run `cd web && npm run build` and restart the service\n", distDir)
 }
 
 func (s *Server) serveFrontendDist(w http.ResponseWriter, r *http.Request) bool {
@@ -318,17 +315,27 @@ func (s *Server) serveFrontendDist(w http.ResponseWriter, r *http.Request) bool 
 	}
 
 	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		if strings.EqualFold(filepath.Ext(target), ".html") {
+			setNoCacheHeaders(w)
+		}
 		http.ServeFile(w, r, target)
 		return true
 	}
 
 	indexFile := filepath.Join(absDist, "index.html")
 	if info, err := os.Stat(indexFile); err == nil && !info.IsDir() {
+		setNoCacheHeaders(w)
 		http.ServeFile(w, r, indexFile)
 		return true
 	}
 
 	return false
+}
+
+func setNoCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
 }
 
 func pathInside(root, candidate string) bool {
@@ -590,8 +597,9 @@ func (s *Server) handleNodeBan(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(strings.TrimSpace(snap.PoolName), poolName) {
 			continue
 		}
+		nodeIP := strings.TrimSpace(snap.NodeIP)
 		host := extractHostFromNodeURI(snap.URI)
-		if !matcher(host, snap.URI) {
+		if !matcher(nodeIP, snap.URI) && !matcher(host, snap.URI) {
 			continue
 		}
 		until, banErr := s.mgr.Ban(snap.Tag, duration)
@@ -1236,9 +1244,8 @@ func (s *Server) handlePools(w http.ResponseWriter, r *http.Request) {
 		}
 		pools := runtimeNamedPools(runtimeCfg)
 		writeJSON(w, map[string]any{
-			"pools":  pools,
-			"count":  len(pools),
-			"legacy": len(runtimeCfg.NamedPools) == 0,
+			"pools": pools,
+			"count": len(pools),
 		})
 	case http.MethodPost:
 		var req poolMutationRequest
@@ -1882,6 +1889,61 @@ func (p nodePayload) toConfig() config.NodeConfig {
 	}
 }
 
+type runtimeNodeCandidate struct {
+	ip   string
+	pool string
+}
+
+func (s *Server) configNodeIPByURI() map[string]string {
+	result := make(map[string]string)
+	if s == nil || s.mgr == nil {
+		return result
+	}
+
+	candidates := make(map[string]runtimeNodeCandidate)
+	for _, snap := range s.mgr.Snapshot() {
+		uri := strings.TrimSpace(snap.URI)
+		ip := strings.TrimSpace(snap.NodeIP)
+		if uri == "" || ip == "" {
+			continue
+		}
+
+		current := candidates[uri]
+		if current.ip == "" || preferRuntimeNodeIP(current.pool, snap.PoolName) {
+			candidates[uri] = runtimeNodeCandidate{ip: ip, pool: snap.PoolName}
+		}
+	}
+
+	for uri, candidate := range candidates {
+		result[uri] = candidate.ip
+	}
+	return result
+}
+
+func preferRuntimeNodeIP(currentPool, incomingPool string) bool {
+	currentPool = strings.TrimSpace(strings.ToLower(currentPool))
+	incomingPool = strings.TrimSpace(strings.ToLower(incomingPool))
+
+	currentDefault := currentPool == "" || currentPool == "default"
+	incomingDefault := incomingPool == "" || incomingPool == "default"
+	return !currentDefault && incomingDefault
+}
+
+func fallbackIPFromNodeURI(rawURI string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURI))
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
 // handleConfigNodes handles GET (list) and POST (create) for config nodes.
 func (s *Server) handleConfigNodes(w http.ResponseWriter, r *http.Request) {
 	if !s.ensureNodeManager(w) {
@@ -1895,7 +1957,29 @@ func (s *Server) handleConfigNodes(w http.ResponseWriter, r *http.Request) {
 			s.respondNodeError(w, err)
 			return
 		}
-		writeJSON(w, map[string]any{"nodes": nodes})
+		nodeIPByURI := s.configNodeIPByURI()
+		response := make([]map[string]any, 0, len(nodes))
+		for _, node := range nodes {
+			uri := strings.TrimSpace(node.URI)
+			nodeIP := strings.TrimSpace(nodeIPByURI[uri])
+			if nodeIP == "" {
+				nodeIP = fallbackIPFromNodeURI(uri)
+			}
+
+			response = append(response, map[string]any{
+				"name":       node.Name,
+				"uri":        node.URI,
+				"node_ip":    nodeIP,
+				"port":       node.Port,
+				"username":   node.Username,
+				"password":   node.Password,
+				"region":     node.Region,
+				"country":    node.Country,
+				"source":     node.Source,
+				"source_ref": node.SourceRef,
+			})
+		}
+		writeJSON(w, map[string]any{"nodes": response})
 	case http.MethodPost:
 		var payload nodePayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {

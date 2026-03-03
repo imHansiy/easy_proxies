@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +38,9 @@ const (
 	modeSequential = "sequential"
 	modeRandom     = "random"
 	modeBalance    = "balance"
+
+	nodeMetadataRefreshInterval = 10 * time.Minute
+	nodeMetadataRetryInterval   = 2 * time.Minute
 )
 
 // Options controls pool outbound behaviour.
@@ -74,6 +80,7 @@ type memberState struct {
 	shared   *sharedMemberState
 
 	regionResolved   atomic.Bool
+	ipResolved       atomic.Bool
 	regionResolving  atomic.Bool
 	regionRetryAfter atomic.Int64
 }
@@ -138,6 +145,7 @@ func newPool(ctx context.Context, _ adapter.Router, logger log.ContextLogger, ta
 				PoolName:      normalized.PoolName,
 				Name:          meta.Name,
 				URI:           meta.URI,
+				NodeIP:        resolveNodeIP(meta.URI),
 				Mode:          meta.Mode,
 				ListenAddress: meta.ListenAddress,
 				Port:          meta.Port,
@@ -326,6 +334,7 @@ func (p *poolOutbound) initializeMembersLocked() error {
 				PoolName:      p.options.PoolName,
 				Name:          meta.Name,
 				URI:           meta.URI,
+				NodeIP:        resolveNodeIP(meta.URI),
 				Mode:          meta.Mode,
 				ListenAddress: meta.ListenAddress,
 				Port:          meta.Port,
@@ -777,53 +786,73 @@ func (p *poolOutbound) maybeResolveMemberLocation(member *memberState) {
 	if member == nil || member.entry == nil {
 		return
 	}
-	if member.regionResolved.Load() {
-		return
-	}
-	now := time.Now().Unix()
-	if retryAfter := member.regionRetryAfter.Load(); retryAfter > now {
+	resolvedBefore := member.regionResolved.Load() && member.ipResolved.Load()
+	now := time.Now()
+	if retryAfter := member.regionRetryAfter.Load(); retryAfter > now.Unix() {
 		return
 	}
 	if !member.regionResolving.CompareAndSwap(false, true) {
 		return
 	}
 
-	go func() {
+	go func(resolvedBefore bool) {
 		defer member.regionResolving.Store(false)
 
 		ctx, cancel := context.WithTimeout(p.ctx, 12*time.Second)
 		defer cancel()
 
-		region, country, err := p.resolveMemberLocation(ctx, member)
+		region, country, nodeIP, err := p.resolveMemberLocation(ctx, member)
 		if err != nil {
-			member.regionRetryAfter.Store(time.Now().Add(10 * time.Minute).Unix())
+			member.regionRetryAfter.Store(time.Now().Add(nodeMetadataRetryInterval).Unix())
 			return
 		}
 
-		member.entry.UpdateLocation(region, country)
-		member.regionResolved.Store(true)
-		member.regionRetryAfter.Store(0)
-		p.logger.Info("region resolved for ", member.tag, ": ", region, " (", country, ")")
-	}()
+		if strings.TrimSpace(region) != "" {
+			member.entry.UpdateLocation(region, country)
+			member.regionResolved.Store(true)
+		}
+		if strings.TrimSpace(nodeIP) != "" {
+			changed, previousIP, currentIP, released := member.entry.UpdateNodeIP(nodeIP)
+			member.ipResolved.Store(true)
+			if changed && previousIP != "" {
+				if released {
+					p.logger.Info("node IP changed for ", member.tag, ": ", previousIP, " -> ", currentIP, ", blacklist auto-released")
+				} else {
+					p.logger.Info("node IP changed for ", member.tag, ": ", previousIP, " -> ", currentIP)
+				}
+			}
+		}
+
+		if !member.regionResolved.Load() || !member.ipResolved.Load() {
+			member.regionRetryAfter.Store(time.Now().Add(nodeMetadataRetryInterval).Unix())
+			return
+		}
+
+		member.regionRetryAfter.Store(time.Now().Add(nodeMetadataRefreshInterval).Unix())
+		if !resolvedBefore {
+			p.logger.Info("node metadata resolved for ", member.tag, ": ", region, " (", country, "), ip=", nodeIP)
+		}
+	}(resolvedBefore)
 }
 
-func (p *poolOutbound) resolveMemberLocation(ctx context.Context, member *memberState) (string, string, error) {
+func (p *poolOutbound) resolveMemberLocation(ctx context.Context, member *memberState) (string, string, string, error) {
 	if member == nil {
-		return "", "", fmt.Errorf("member is nil")
+		return "", "", "", fmt.Errorf("member is nil")
 	}
 
 	destination := M.ParseSocksaddrHostPort("www.cloudflare.com", 443)
 	conn, err := member.outbound.DialContext(ctx, N.NetworkTCP, destination)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	defer conn.Close()
 
-	isoCode, err := cloudflareTraceISO(conn)
+	trace, err := cloudflareTrace(conn)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
+	isoCode := trace.ISOCode
 	region := geoip.RegionFromISO(isoCode)
 	country := geoip.RegionName(region)
 	if region == geoip.RegionOther {
@@ -833,12 +862,17 @@ func (p *poolOutbound) resolveMemberLocation(ctx context.Context, member *member
 		}
 	}
 
-	return region, country, nil
+	return region, country, strings.TrimSpace(trace.IP), nil
 }
 
-func cloudflareTraceISO(conn net.Conn) (string, error) {
+type cloudflareTraceResult struct {
+	ISOCode string
+	IP      string
+}
+
+func cloudflareTrace(conn net.Conn) (cloudflareTraceResult, error) {
 	if conn == nil {
-		return "", fmt.Errorf("connection is nil")
+		return cloudflareTraceResult{}, fmt.Errorf("connection is nil")
 	}
 
 	tlsConn := tls.Client(conn, &tls.Config{ServerName: "www.cloudflare.com", MinVersion: tls.VersionTLS12})
@@ -846,40 +880,53 @@ func cloudflareTraceISO(conn net.Conn) (string, error) {
 
 	_ = tlsConn.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tlsConn.Handshake(); err != nil {
-		return "", fmt.Errorf("tls handshake: %w", err)
+		return cloudflareTraceResult{}, fmt.Errorf("tls handshake: %w", err)
 	}
 
 	req := "GET /cdn-cgi/trace HTTP/1.1\r\nHost: www.cloudflare.com\r\nConnection: close\r\nUser-Agent: easy-proxies/1.0\r\nAccept: */*\r\n\r\n"
 	if _, err := tlsConn.Write([]byte(req)); err != nil {
-		return "", fmt.Errorf("write trace request: %w", err)
+		return cloudflareTraceResult{}, fmt.Errorf("write trace request: %w", err)
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(tlsConn, 64*1024))
 	if err != nil {
-		return "", fmt.Errorf("read trace response: %w", err)
+		return cloudflareTraceResult{}, fmt.Errorf("read trace response: %w", err)
 	}
 
-	return parseCloudflareTraceISO(string(raw))
+	return parseCloudflareTrace(string(raw))
 }
 
-func parseCloudflareTraceISO(raw string) (string, error) {
+func parseCloudflareTrace(raw string) (cloudflareTraceResult, error) {
 	sep := strings.Index(raw, "\r\n\r\n")
 	if sep == -1 {
-		return "", fmt.Errorf("invalid trace response")
+		return cloudflareTraceResult{}, fmt.Errorf("invalid trace response")
 	}
 	body := raw[sep+4:]
+	result := cloudflareTraceResult{}
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "loc=") {
+		if line == "" {
 			continue
 		}
-		iso := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(line, "loc=")))
-		if len(iso) != 2 {
-			return "", fmt.Errorf("invalid loc value: %q", iso)
+		if strings.HasPrefix(line, "ip=") {
+			result.IP = strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+			continue
 		}
-		return iso, nil
+		if strings.HasPrefix(line, "loc=") {
+			iso := strings.ToUpper(strings.TrimSpace(strings.TrimPrefix(line, "loc=")))
+			if len(iso) != 2 {
+				return cloudflareTraceResult{}, fmt.Errorf("invalid loc value: %q", iso)
+			}
+			result.ISOCode = iso
+		}
 	}
-	return "", fmt.Errorf("loc not found in trace response")
+	if result.ISOCode == "" {
+		return cloudflareTraceResult{}, fmt.Errorf("loc not found in trace response")
+	}
+	if result.IP == "" {
+		return cloudflareTraceResult{}, fmt.Errorf("ip not found in trace response")
+	}
+	return result, nil
 }
 
 // makeReleaseByTagFunc creates a release function that works before member initialization
@@ -903,6 +950,227 @@ func (p *poolOutbound) makeBanByTagFunc(tag string) func(duration time.Duration)
 		until, _ := banSharedMember(p.options.PoolName, tag, duration)
 		return until
 	}
+}
+
+var nodeIPCache sync.Map
+
+func resolveNodeIP(rawURI string) string {
+	host := extractURIHost(rawURI, 0)
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return ""
+	}
+
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+
+	if cached, ok := nodeIPCache.Load(host); ok {
+		if value, ok := cached.(string); ok {
+			return value
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) == 0 {
+		nodeIPCache.Store(host, "")
+		return ""
+	}
+
+	chosen := addrs[0].IP.String()
+	for _, addr := range addrs {
+		if v4 := addr.IP.To4(); v4 != nil {
+			chosen = v4.String()
+			break
+		}
+	}
+	nodeIPCache.Store(host, chosen)
+	return chosen
+}
+
+func extractURIHost(rawURI string, depth int) string {
+	if depth > 4 {
+		return ""
+	}
+
+	trimmed := strings.TrimSpace(rawURI)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "relay://") {
+		if host := extractRelayHost(trimmed, depth+1); host != "" {
+			return host
+		}
+	}
+	if strings.HasPrefix(lower, "vmess://") {
+		if host := extractVMessHost(trimmed); host != "" {
+			return host
+		}
+	}
+	if strings.HasPrefix(lower, "ss://") {
+		if host := extractSSHost(trimmed); host != "" {
+			return host
+		}
+	}
+	if strings.HasPrefix(lower, "ssr://") {
+		if host := extractSSRHost(trimmed); host != "" {
+			return host
+		}
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
+}
+
+func extractRelayHost(rawURI string, depth int) string {
+	parsed, err := url.Parse(rawURI)
+	if err != nil {
+		return ""
+	}
+	for _, hop := range parsed.Query()["hop"] {
+		decoded := decodeBase64Loose(hop)
+		if decoded == "" {
+			continue
+		}
+		if host := extractURIHost(decoded, depth); host != "" {
+			return host
+		}
+	}
+	return ""
+}
+
+func extractVMessHost(rawURI string) string {
+	body := rawURI
+	if idx := strings.Index(body, "://"); idx >= 0 {
+		body = body[idx+3:]
+	}
+	body = strings.SplitN(body, "#", 2)[0]
+
+	// New-style VMess URI may use authority form (vmess://user@host:port?...)
+	if strings.Contains(body, "@") {
+		if parsed, err := url.Parse(rawURI); err == nil {
+			if host := strings.TrimSpace(parsed.Hostname()); host != "" {
+				return host
+			}
+		}
+	}
+
+	decoded := decodeBase64Loose(body)
+	if decoded == "" {
+		return ""
+	}
+
+	var payload struct {
+		Add  string `json:"add"`
+		Host string `json:"host"`
+	}
+	if err := json.Unmarshal([]byte(decoded), &payload); err != nil {
+		return ""
+	}
+	host := strings.TrimSpace(payload.Add)
+	if host == "" {
+		host = strings.TrimSpace(payload.Host)
+	}
+	return host
+}
+
+func extractSSHost(rawURI string) string {
+	body := rawURI
+	if idx := strings.Index(body, "://"); idx >= 0 {
+		body = body[idx+3:]
+	}
+	body = strings.SplitN(body, "#", 2)[0]
+	if body == "" {
+		return ""
+	}
+
+	if strings.Contains(body, "@") {
+		afterAt := body[strings.LastIndex(body, "@")+1:]
+		afterAt = strings.SplitN(afterAt, "?", 2)[0]
+		host, _ := splitHostPortLoose(afterAt)
+		return host
+	}
+
+	encoded := strings.SplitN(body, "?", 2)[0]
+	decoded := decodeBase64Loose(encoded)
+	if decoded == "" || !strings.Contains(decoded, "@") {
+		return ""
+	}
+	afterAt := decoded[strings.LastIndex(decoded, "@")+1:]
+	host, _ := splitHostPortLoose(afterAt)
+	return host
+}
+
+func extractSSRHost(rawURI string) string {
+	body := rawURI
+	if idx := strings.Index(body, "://"); idx >= 0 {
+		body = body[idx+3:]
+	}
+	body = strings.SplitN(body, "#", 2)[0]
+	decoded := decodeBase64Loose(body)
+	if decoded == "" {
+		return ""
+	}
+	endpoint := strings.SplitN(decoded, "/", 2)[0]
+	parts := strings.Split(endpoint, ":")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[0])
+}
+
+func splitHostPortLoose(value string) (host, port string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", ""
+	}
+	if h, p, err := net.SplitHostPort(value); err == nil {
+		return strings.TrimSpace(h), strings.TrimSpace(p)
+	}
+	if strings.Count(value, ":") == 1 {
+		parts := strings.SplitN(value, ":", 2)
+		return strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	}
+	return value, ""
+}
+
+func decodeBase64Loose(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+
+	candidates := []string{raw}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(raw, "-", "+"), "_", "/")
+	if normalized != raw {
+		candidates = append(candidates, normalized)
+	}
+
+	for _, candidate := range candidates {
+		padded := candidate + strings.Repeat("=", (4-len(candidate)%4)%4)
+		if decoded, err := base64.StdEncoding.DecodeString(padded); err == nil {
+			return string(decoded)
+		}
+		if decoded, err := base64.RawStdEncoding.DecodeString(candidate); err == nil {
+			return string(decoded)
+		}
+		if decoded, err := base64.URLEncoding.DecodeString(padded); err == nil {
+			return string(decoded)
+		}
+		if decoded, err := base64.RawURLEncoding.DecodeString(candidate); err == nil {
+			return string(decoded)
+		}
+	}
+
+	return ""
 }
 
 func composeMonitorTag(poolName, memberTag string) string {

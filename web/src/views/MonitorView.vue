@@ -55,10 +55,11 @@ const pools = computed(() => {
 const filteredNodes = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
   return payload.value.nodes.filter((node) => {
+    const realAddress = nodeRealAddress(node)
     if (filters.region !== 'all' && (node.region || 'other') !== filters.region) return false
     if (filters.pool !== 'all' && (node.pool_name || 'default') !== filters.pool) return false
     if (!keyword) return true
-    return [node.tag, node.name, node.pool_name, node.region, node.country]
+    return [node.tag, node.name, node.pool_name, node.region, node.country, realAddress]
       .filter(Boolean)
       .some((item) => String(item).toLowerCase().includes(keyword))
   })
@@ -90,14 +91,141 @@ function statusText(node: NodeSnapshot): string {
   return '健康'
 }
 
-async function refresh() {
-  loading.value = true
+function decodeBase64Payload(payload: string): string {
+  const compact = payload.trim().replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')
+  if (!compact) return ''
+  const padded = compact + '='.repeat((4 - (compact.length % 4)) % 4)
+  try {
+    const binary = atob(padded)
+    const bytes = Uint8Array.from(binary, (ch) => ch.charCodeAt(0))
+    return new TextDecoder().decode(bytes)
+  } catch {
+    return ''
+  }
+}
+
+function splitHostPort(input: string): { host: string; port: string } {
+  const value = input.trim()
+  if (!value) return { host: '', port: '' }
+
+  if (value.startsWith('[')) {
+    const end = value.indexOf(']')
+    if (end > 0) {
+      const host = value.slice(1, end)
+      const rest = value.slice(end + 1)
+      const port = rest.startsWith(':') ? rest.slice(1) : ''
+      return { host, port }
+    }
+  }
+
+  const firstColon = value.indexOf(':')
+  const lastColon = value.lastIndexOf(':')
+  if (firstColon > 0 && firstColon === lastColon) {
+    return { host: value.slice(0, lastColon), port: value.slice(lastColon + 1) }
+  }
+
+  return { host: value, port: '' }
+}
+
+function parseSSAddress(uri: string): { host: string; port: string } {
+  const body = uri.slice('ss://'.length).split('#')[0] ?? ''
+  if (!body) return { host: '', port: '' }
+
+  if (body.includes('@')) {
+    const afterAt = body.slice(body.lastIndexOf('@') + 1).split('?')[0] ?? ''
+    return splitHostPort(afterAt)
+  }
+
+  const decoded = decodeBase64Payload(body.split('?')[0] ?? '')
+  if (!decoded || !decoded.includes('@')) {
+    return { host: '', port: '' }
+  }
+  const afterAt = decoded.slice(decoded.lastIndexOf('@') + 1)
+  return splitHostPort(afterAt)
+}
+
+function parseVMessAddress(uri: string): { host: string; port: string } {
+  const raw = uri.slice('vmess://'.length).split('#')[0] ?? ''
+  const decoded = decodeBase64Payload(raw)
+  if (!decoded) return { host: '', port: '' }
+
+  try {
+    const payload = JSON.parse(decoded) as Record<string, unknown>
+    const host = String(payload.add ?? payload.host ?? '').trim()
+    const port = String(payload.port ?? '').trim()
+    return { host, port }
+  } catch {
+    return { host: '', port: '' }
+  }
+}
+
+function parseSSRAddress(uri: string): { host: string; port: string } {
+  const raw = uri.slice('ssr://'.length).split('#')[0] ?? ''
+  const decoded = decodeBase64Payload(raw)
+  if (!decoded) return { host: '', port: '' }
+
+  const endpoint = decoded.split('/')[0] ?? ''
+  const parts = endpoint.split(':')
+  if (parts.length < 2) return { host: '', port: '' }
+  return { host: parts[0] ?? '', port: parts[1] ?? '' }
+}
+
+function parseRelayAddress(uri: string): { host: string; port: string } {
+  try {
+    const parsed = new URL(uri)
+    const hops = parsed.searchParams.getAll('hop')
+    for (const hop of hops) {
+      const decodedHop = decodeBase64Payload(hop)
+      if (!decodedHop) continue
+      const endpoint = parseAddressFromURI(decodedHop)
+      if (endpoint.host) return endpoint
+    }
+  } catch {
+    return { host: '', port: '' }
+  }
+  return { host: '', port: '' }
+}
+
+function parseAddressFromURI(uri: string): { host: string; port: string } {
+  const value = uri.trim()
+  if (!value) return { host: '', port: '' }
+
+  if (value.startsWith('relay://')) return parseRelayAddress(value)
+  if (value.startsWith('vmess://')) return parseVMessAddress(value)
+  if (value.startsWith('ssr://')) return parseSSRAddress(value)
+  if (value.startsWith('ss://')) return parseSSAddress(value)
+
+  try {
+    const parsed = new URL(value)
+    return {
+      host: parsed.hostname,
+      port: parsed.port,
+    }
+  } catch {
+    return { host: '', port: '' }
+  }
+}
+
+function nodeRealAddress(node: NodeSnapshot): string {
+  const nodeIP = String(node.node_ip || '').trim()
+  if (nodeIP) return nodeIP
+
+  const { host } = parseAddressFromURI(node.uri || '')
+  if (!host) return '-'
+  const ipv4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(host)
+  const ipv6 = host.includes(':')
+  return ipv4 || ipv6 ? host : '-'
+}
+
+async function refresh(options: { silent?: boolean } = {}) {
+  const silent = options.silent === true
+  if (!silent) loading.value = true
   try {
     payload.value = await getNodes()
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.error || error?.message || '加载节点失败')
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -207,12 +335,14 @@ function progressPercent() {
 }
 
 function onGlobalRefresh() {
-  refresh()
+  refresh({ silent: true })
 }
 
 onMounted(() => {
   refresh()
-  timer = window.setInterval(refresh, 10000)
+  timer = window.setInterval(() => {
+    refresh({ silent: true })
+  }, 10000)
   window.addEventListener('ep:refresh', onGlobalRefresh)
 })
 
@@ -277,13 +407,18 @@ onBeforeUnmount(() => {
         </el-col>
       </el-row>
 
-      <el-table v-loading="loading" :data="filteredNodes" border stripe style="width:100%;">
+      <el-table v-loading="loading" :data="filteredNodes" row-key="tag" border stripe style="width:100%;">
         <el-table-column prop="name" label="节点" min-width="220">
           <template #default="scope">
             <div style="display:grid; gap:2px;">
               <strong>{{ scope.row.name || scope.row.tag }}</strong>
               <span class="muted monospace">{{ scope.row.tag }}</span>
             </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="节点IP" min-width="180">
+          <template #default="scope">
+            <span class="monospace">{{ nodeRealAddress(scope.row) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="pool_name" label="业务池" min-width="120">

@@ -315,6 +315,9 @@ onBeforeUnmount(() => {
         </div>
         <el-table v-loading="loading.nodes" :data="nodes" border stripe>
           <el-table-column prop="name" label="名称" min-width="140" />
+          <el-table-column prop="node_ip" label="节点IP" min-width="150">
+            <template #default="scope"><span class="monospace">{{ scope.row.node_ip || '-' }}</span></template>
+          </el-table-column>
           <el-table-column prop="uri" label="URI" min-width="280">
             <template #default="scope"><span class="monospace">{{ scope.row.uri }}</span></template>
           </el-table-column>

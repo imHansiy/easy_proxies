@@ -38,6 +38,7 @@ type RuntimeConfig struct {
 // NodeRuntimeState stores runtime health and activity state per node tag.
 type NodeRuntimeState struct {
 	Tag              string
+	NodeIP           string
 	FailureCount     int
 	SuccessCount     int64
 	Blacklisted      bool

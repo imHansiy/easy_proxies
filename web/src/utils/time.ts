@@ -53,10 +53,13 @@ export function formatRelativeTime(raw?: string): string {
   const date = new Date(raw)
   if (Number.isNaN(date.getTime())) return raw
   const diffSec = Math.floor((Date.now() - date.getTime()) / 1000)
-  if (diffSec < 60) return `${diffSec} 秒前`
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`
-  return `${Math.floor(diffSec / 86400)} 天前`
+  const isFuture = diffSec < 0
+  const absSec = Math.abs(diffSec)
+
+  if (absSec < 60) return `${absSec} 秒${isFuture ? '后' : '前'}`
+  if (absSec < 3600) return `${Math.floor(absSec / 60)} 分钟${isFuture ? '后' : '前'}`
+  if (absSec < 86400) return `${Math.floor(absSec / 3600)} 小时${isFuture ? '后' : '前'}`
+  return `${Math.floor(absSec / 86400)} 天${isFuture ? '后' : '前'}`
 }
 
 export function latencyLabel(ms: number): string {
