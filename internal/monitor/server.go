@@ -153,6 +153,9 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/subscription/refresh", s.withAuth(s.handleSubscriptionRefresh))
 	mux.HandleFunc("/api/subscriptions", s.withAuth(s.handleSubscriptions))
 	mux.HandleFunc("/api/subscriptions/", s.withAuth(s.handleSubscriptionItem))
+	mux.HandleFunc("/api/script-sources", s.withAuth(s.handleScriptSources))
+	mux.HandleFunc("/api/script-sources/test", s.withAuth(s.handleScriptSourceTest))
+	mux.HandleFunc("/api/script-sources/", s.withAuth(s.handleScriptSourceItem))
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	s.srv = &http.Server{Addr: cfg.Listen, Handler: s.withCORS(mux)}
 	return s
@@ -959,6 +962,13 @@ func (s *Server) handleAPIDocs(w http.ResponseWriter, r *http.Request) {
 			"DELETE /api/subscriptions/{index}":       "删除订阅",
 			"POST /api/subscriptions/{index}/refresh": "刷新指定订阅",
 			"GET /api/subscriptions/{index}/logs":     "读取指定订阅日志",
+			"GET /api/script-sources":                 "读取脚本源列表",
+			"POST /api/script-sources":                "新增脚本源",
+			"PUT /api/script-sources/{id}":            "更新脚本源",
+			"DELETE /api/script-sources/{id}":         "删除脚本源",
+			"POST /api/script-sources/{id}/run":       "运行脚本源并导入节点",
+			"POST /api/script-sources/test":           "测试脚本（不保存、不导入）",
+			"POST /api/script-sources/{id}/test":      "测试脚本源（不导入）",
 			"POST /api/reload":                        "重载配置并重启代理实例",
 		},
 	})
@@ -1868,6 +1878,225 @@ func (s *Server) persistSubscriptionsLocked(ctx context.Context) error {
 	}
 
 	return s.cfgSrc.SaveSubscriptions()
+}
+
+type scriptSourceManager interface {
+	ListScriptSources(ctx context.Context) ([]storage.ScriptSource, error)
+	CreateScriptSource(ctx context.Context, src storage.ScriptSource) (storage.ScriptSource, error)
+	UpdateScriptSource(ctx context.Context, id string, src storage.ScriptSource) (storage.ScriptSource, error)
+	DeleteScriptSource(ctx context.Context, id string) error
+	RunScriptSource(ctx context.Context, id string, apply bool) (storage.ScriptRunResult, error)
+	TestScript(ctx context.Context, src storage.ScriptSource) (storage.ScriptRunResult, error)
+}
+
+type scriptSourcePayload struct {
+	Name               string   `json:"name"`
+	Command            string   `json:"command"`
+	Args               []string `json:"args"`
+	Script             string   `json:"script"`
+	TimeoutMs          int      `json:"timeout_ms"`
+	SetupTimeoutMs     int      `json:"setup_timeout_ms"`
+	MaxOutputBytes     int      `json:"max_output_bytes"`
+	MaxNodes           int      `json:"max_nodes"`
+	PythonRequirements []string `json:"python_requirements"`
+	Enabled            *bool    `json:"enabled"`
+}
+
+func (p scriptSourcePayload) toStorage() storage.ScriptSource {
+	enabled := true
+	if p.Enabled != nil {
+		enabled = *p.Enabled
+	}
+	return storage.ScriptSource{
+		Name:               p.Name,
+		Command:            p.Command,
+		Args:               append([]string(nil), p.Args...),
+		Script:             p.Script,
+		TimeoutMs:          p.TimeoutMs,
+		SetupTimeoutMs:     p.SetupTimeoutMs,
+		MaxOutputBytes:     p.MaxOutputBytes,
+		MaxNodes:           p.MaxNodes,
+		PythonRequirements: append([]string(nil), p.PythonRequirements...),
+		Enabled:            enabled,
+	}
+}
+
+func (s *Server) handleScriptSources(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.nodeMgr.(scriptSourceManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "脚本源管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		sources, err := mgr.ListScriptSources(r.Context())
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"sources": sources, "count": len(sources)})
+	case http.MethodPost:
+		var payload scriptSourcePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		created, err := mgr.CreateScriptSource(r.Context(), payload.toStorage())
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"source": created, "message": "脚本源已创建"})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleScriptSourceTest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	mgr, ok := s.nodeMgr.(scriptSourceManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "脚本源管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	var payload scriptSourcePayload
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "请求格式错误"})
+		return
+	}
+
+	result, testErr := mgr.TestScript(r.Context(), payload.toStorage())
+	if testErr != nil {
+		result.Error = testErr.Error()
+	}
+	writeJSON(w, result)
+}
+
+func (s *Server) handleScriptSourceItem(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.nodeMgr.(scriptSourceManager)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]any{"error": "脚本源管理未启用（请启用数据库存储）"})
+		return
+	}
+
+	rest := strings.TrimPrefix(r.URL.Path, "/api/script-sources/")
+	rest = strings.Trim(rest, "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "脚本源 ID 无效"})
+		return
+	}
+	id, err := url.PathUnescape(parts[0])
+	if err != nil || strings.TrimSpace(id) == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": "脚本源 ID 无效"})
+		return
+	}
+	action := ""
+	if len(parts) > 1 {
+		action = strings.ToLower(strings.TrimSpace(parts[1]))
+	}
+
+	if action == "run" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Apply *bool `json:"apply"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		apply := true
+		if req.Apply != nil {
+			apply = *req.Apply
+		}
+		result, runErr := mgr.RunScriptSource(r.Context(), id, apply)
+		// Always return the run payload for debugging, even on error.
+		if runErr != nil {
+			result.Error = runErr.Error()
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	if action == "test" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		result, testErr := mgr.RunScriptSource(r.Context(), id, false)
+		if testErr != nil {
+			result.Error = testErr.Error()
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	if action == "test" {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var payload scriptSourcePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		// Test does not persist and does not apply.
+		result, testErr := mgr.TestScript(r.Context(), payload.toStorage())
+		if testErr != nil {
+			result.Error = testErr.Error()
+		}
+		writeJSON(w, result)
+		return
+	}
+
+	if action != "" {
+		w.WriteHeader(http.StatusNotFound)
+		writeJSON(w, map[string]any{"error": "无效的脚本源操作"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		var payload scriptSourcePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		updated, err := mgr.UpdateScriptSource(r.Context(), id, payload.toStorage())
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"source": updated, "message": "脚本源已更新"})
+	case http.MethodDelete:
+		if err := mgr.DeleteScriptSource(r.Context(), id); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, map[string]any{"message": "脚本源已删除"})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 // nodePayload is the JSON request body for node CRUD operations.

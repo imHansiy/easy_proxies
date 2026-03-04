@@ -854,7 +854,25 @@ func parseNodesFromContent(content string) ([]config.NodeConfig, error) {
 }
 
 func isProxyURI(s string) bool {
-	schemes := []string{"vmess://", "vless://", "trojan://", "ss://", "ssr://", "hysteria://", "hysteria2://", "hy2://", "relay://"}
+	schemes := []string{
+		"vmess://",
+		"vless://",
+		"trojan://",
+		"ss://",
+		"ssr://",
+		"hysteria://",
+		"hysteria2://",
+		"hy2://",
+		"relay://",
+		// upstream HTTP/SOCKS proxies
+		"http://",
+		"https://",
+		"socks://",
+		"socks5://",
+		"socks5h://",
+		"socks4://",
+		"socks4a://",
+	}
 	lower := strings.ToLower(s)
 	for _, scheme := range schemes {
 		if strings.HasPrefix(lower, scheme) {
@@ -881,6 +899,7 @@ type clashProxy struct {
 	Server            string                 `yaml:"server"`
 	Port              int                    `yaml:"port"`
 	UUID              string                 `yaml:"uuid"`
+	Username          string                 `yaml:"username"`
 	Password          string                 `yaml:"password"`
 	Cipher            string                 `yaml:"cipher"`
 	Network           string                 `yaml:"network"`
@@ -1042,6 +1061,10 @@ func convertClashProxyToURI(p clashProxy) string {
 			return ""
 		}
 		return buildTrojanURI(p)
+	case "http", "https":
+		return buildHTTPProxyURI(p)
+	case "socks", "socks5", "socks5h":
+		return buildSOCKSProxyURI(p)
 	case "ss", "shadowsocks":
 		if strings.TrimSpace(p.Cipher) == "" || strings.TrimSpace(p.Password) == "" {
 			return ""
@@ -1284,6 +1307,58 @@ func buildHysteria2URI(p clashProxy) string {
 	}
 	name := strings.TrimSpace(p.Name)
 	return fmt.Sprintf("hysteria2://%s@%s:%d%s#%s", p.Password, p.Server, p.Port, query, url.QueryEscape(name))
+}
+
+func buildHTTPProxyURI(p clashProxy) string {
+	scheme := "http"
+	if p.TLS {
+		scheme = "https"
+	}
+
+	userinfo := ""
+	username := strings.TrimSpace(p.Username)
+	if username != "" {
+		if strings.TrimSpace(p.Password) != "" {
+			userinfo = url.UserPassword(username, p.Password).String() + "@"
+		} else {
+			userinfo = url.User(username).String() + "@"
+		}
+	}
+
+	params := url.Values{}
+	if p.SkipCertVerify {
+		params.Set("allowInsecure", "1")
+	}
+	if p.ServerName != "" {
+		params.Set("sni", p.ServerName)
+	} else if p.SNI != "" {
+		params.Set("sni", p.SNI)
+	}
+
+	query := ""
+	if len(params) > 0 {
+		query = "?" + params.Encode()
+	}
+
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("%s://%s%s:%d%s#%s", scheme, userinfo, p.Server, p.Port, query, url.QueryEscape(name))
+}
+
+func buildSOCKSProxyURI(p clashProxy) string {
+	scheme := "socks5"
+
+	userinfo := ""
+	username := strings.TrimSpace(p.Username)
+	if username != "" {
+		if strings.TrimSpace(p.Password) != "" {
+			userinfo = url.UserPassword(username, p.Password).String() + "@"
+		} else {
+			userinfo = url.User(username).String() + "@"
+		}
+	}
+
+	name := strings.TrimSpace(p.Name)
+	return fmt.Sprintf("%s://%s%s:%d#%s", scheme, userinfo, p.Server, p.Port, url.QueryEscape(name))
 }
 
 type defaultLogger struct{}

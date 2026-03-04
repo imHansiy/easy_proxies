@@ -73,19 +73,7 @@ SUBSCRIPTION_REFRESH_ENABLED=true
 
 ### 2. 运行
 
-**Docker 方式（推荐）：**
-
-```bash
-./start.sh
-```
-
-或手动执行：
-
-```bash
-docker compose up -d
-```
-
-**本地编译运行：**
+**本地编译运行（推荐）：**
 
 ```bash
 # 推荐：直接使用脚本（默认包含 with_quic 等完整标签）
@@ -122,7 +110,7 @@ npm run build
 ```yaml
 mode: pool                    # 运行模式: pool (节点池)、multi-port (多端口) 或 hybrid (混合)
 log_level: info               # 日志级别: debug, info, warn, error
-external_ip: ""               # 外部 IP 地址，用于导出时替换 0.0.0.0（Docker 部署时建议配置）
+external_ip: ""               # 外部 IP 地址，用于导出时替换 0.0.0.0（可选）
 
 # 订阅链接（可选，支持多个）
 subscriptions:
@@ -678,12 +666,12 @@ Render 运行环境可能会重建容器，建议启用 `storage.driver + storag
 - 运行参数（模式、监听、代理池、刷新策略、GeoIP 等）
 - 运行时状态（失败计数、黑名单状态、探测可用性）
 
-仓库已提供 Render Blueprint：`render.yaml`。
+仓库已移除 Render Blueprint（原 `render.yaml`）。
 
 **快速部署步骤：**
 
 1. 在 Render 里选择 **New +** -> **Blueprint**，指向本仓库
-2. 保留 `render.yaml` 默认设置（会自动创建 Web Service + PostgreSQL）
+2. Render 相关部署说明已移除。
 3. 可选：首次导入节点可填写 `SUBSCRIPTIONS`
 4. 部署完成后，访问 Render 分配的域名即可打开 WebUI
 
@@ -706,7 +694,7 @@ Render 运行环境可能会重建容器，建议启用 `storage.driver + storag
 使用 `network_mode: host` 直接使用主机网络，无需手动映射端口：
 
 ```yaml
-# docker-compose.yml
+Docker Compose 示例已移除。
 services:
   easy-proxies:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
@@ -726,7 +714,7 @@ services:
 手动指定需要映射的端口：
 
 ```yaml
-# docker-compose.yml
+Docker Compose 示例已移除。
 services:
   easy-proxies:
     image: ghcr.io/jasonwong1991/easy_proxies:latest

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"easy_proxies/internal/config"
@@ -43,6 +44,25 @@ type subscriptionModel struct {
 }
 
 func (subscriptionModel) TableName() string { return "ep_subscriptions" }
+
+type scriptSourceModel struct {
+	Position           int       `gorm:"not null;index"`
+	ID                 string    `gorm:"primaryKey;type:text"`
+	Name               string    `gorm:"type:text;not null"`
+	Command            string    `gorm:"type:text;not null"`
+	Args               string    `gorm:"type:text;not null;default:''"` // JSON
+	Script             string    `gorm:"type:text;not null"`
+	TimeoutMs          int       `gorm:"not null;default:0"`
+	SetupTimeoutMs     int       `gorm:"not null;default:0"`
+	MaxOutputBytes     int       `gorm:"not null;default:0"`
+	MaxNodes           int       `gorm:"not null;default:0"`
+	PythonRequirements string    `gorm:"type:text;not null;default:''"` // JSON
+	Enabled            bool      `gorm:"not null;default:true"`
+	CreatedAt          time.Time `gorm:"not null"`
+	UpdatedAt          time.Time `gorm:"not null"`
+}
+
+func (scriptSourceModel) TableName() string { return "ep_script_sources" }
 
 type runtimeConfigModel struct {
 	ID        int16     `gorm:"primaryKey"`
@@ -135,6 +155,7 @@ func (s *GORMStore) EnsureSchema(ctx context.Context) error {
 	return s.db.WithContext(ctx).AutoMigrate(
 		&nodeModel{},
 		&subscriptionModel{},
+		&scriptSourceModel{},
 		&runtimeConfigModel{},
 		&settingsModel{},
 		&nodeRuntimeModel{},
@@ -213,6 +234,89 @@ func (s *GORMStore) SaveSubscriptions(ctx context.Context, subscriptions []strin
 				Position:  idx,
 				URL:       subURL,
 				UpdatedAt: time.Now(),
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *GORMStore) LoadScriptSources(ctx context.Context) ([]ScriptSource, error) {
+	var rows []scriptSourceModel
+	if err := s.db.WithContext(ctx).Order("position asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]ScriptSource, 0, len(rows))
+	for _, row := range rows {
+		var args []string
+		if strings.TrimSpace(row.Args) != "" {
+			_ = json.Unmarshal([]byte(row.Args), &args)
+		}
+		out = append(out, ScriptSource{
+			ID:             row.ID,
+			Name:           row.Name,
+			Command:        row.Command,
+			Args:           args,
+			Script:         row.Script,
+			TimeoutMs:      row.TimeoutMs,
+			SetupTimeoutMs: row.SetupTimeoutMs,
+			MaxOutputBytes: row.MaxOutputBytes,
+			MaxNodes:       row.MaxNodes,
+			PythonRequirements: func() []string {
+				var reqs []string
+				if strings.TrimSpace(row.PythonRequirements) != "" {
+					_ = json.Unmarshal([]byte(row.PythonRequirements), &reqs)
+				}
+				return reqs
+			}(),
+			Enabled:   row.Enabled,
+			CreatedAt: row.CreatedAt,
+			UpdatedAt: row.UpdatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (s *GORMStore) SaveScriptSources(ctx context.Context, sources []ScriptSource) error {
+	now := time.Now()
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&scriptSourceModel{}).Error; err != nil {
+			return err
+		}
+		for idx, src := range sources {
+			argsJSON := ""
+			if len(src.Args) > 0 {
+				if payload, err := json.Marshal(src.Args); err == nil {
+					argsJSON = string(payload)
+				}
+			}
+			reqsJSON := ""
+			if len(src.PythonRequirements) > 0 {
+				if payload, err := json.Marshal(src.PythonRequirements); err == nil {
+					reqsJSON = string(payload)
+				}
+			}
+			createdAt := src.CreatedAt
+			if createdAt.IsZero() {
+				createdAt = now
+			}
+			row := scriptSourceModel{
+				Position:           idx,
+				ID:                 src.ID,
+				Name:               src.Name,
+				Command:            src.Command,
+				Args:               argsJSON,
+				Script:             src.Script,
+				TimeoutMs:          src.TimeoutMs,
+				SetupTimeoutMs:     src.SetupTimeoutMs,
+				MaxOutputBytes:     src.MaxOutputBytes,
+				MaxNodes:           src.MaxNodes,
+				PythonRequirements: reqsJSON,
+				Enabled:            src.Enabled,
+				CreatedAt:          createdAt,
+				UpdatedAt:          now,
 			}
 			if err := tx.Create(&row).Error; err != nil {
 				return err

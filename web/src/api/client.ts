@@ -6,6 +6,8 @@ import type {
   NodesPayload,
   ProbeEvent,
   RuntimeConfig,
+  ScriptRunResult,
+  ScriptSource,
   SettingsPayload,
   SubscriptionListPayload,
   SubscriptionLog,
@@ -175,6 +177,40 @@ export async function triggerReload(): Promise<any> {
   const { data } = await http.post('/api/reload')
   if (data?.error) throw new Error(data.error)
   return data
+}
+
+export async function listScriptSources(): Promise<ScriptSource[]> {
+  const { data } = await http.get('/api/script-sources')
+  if (data?.error) throw new Error(data.error)
+  return data.sources || []
+}
+
+export async function createScriptSource(payload: Partial<ScriptSource>): Promise<any> {
+  const { data } = await http.post('/api/script-sources', payload)
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export async function updateScriptSource(id: string, payload: Partial<ScriptSource>): Promise<any> {
+  const { data } = await http.put(`/api/script-sources/${encodeURIComponent(id)}`, payload)
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export async function deleteScriptSource(id: string): Promise<any> {
+  const { data } = await http.delete(`/api/script-sources/${encodeURIComponent(id)}`)
+  if (data?.error) throw new Error(data.error)
+  return data
+}
+
+export async function runScriptSource(id: string, apply = true): Promise<ScriptRunResult> {
+  const { data } = await http.post(`/api/script-sources/${encodeURIComponent(id)}/run`, { apply })
+  return data as ScriptRunResult
+}
+
+export async function testScriptSource(payload: Partial<ScriptSource>): Promise<ScriptRunResult> {
+  const { data } = await http.post('/api/script-sources/test', payload)
+  return data as ScriptRunResult
 }
 
 export function exportNodesURL(): string {

@@ -35,6 +35,41 @@ type RuntimeConfig struct {
 	LogLevel                 string                           `json:"log_level"`
 }
 
+// ScriptSource stores a runnable script definition that outputs nodes.
+// This feature is intended for trusted users only.
+type ScriptSource struct {
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Command            string    `json:"command"`                       // e.g. python3/node/bash
+	Args               []string  `json:"args,omitempty"`                // optional argv before the script path
+	Script             string    `json:"script"`                        // script body
+	TimeoutMs          int       `json:"timeout_ms,omitempty"`          // execution timeout in milliseconds
+	SetupTimeoutMs     int       `json:"setup_timeout_ms,omitempty"`    // dependency/env setup timeout in milliseconds
+	MaxOutputBytes     int       `json:"max_output_bytes,omitempty"`    // stdout/stderr cap (each)
+	MaxNodes           int       `json:"max_nodes,omitempty"`           // cap parsed nodes
+	PythonRequirements []string  `json:"python_requirements,omitempty"` // pip requirement lines
+	Enabled            bool      `json:"enabled"`
+	CreatedAt          time.Time `json:"created_at,omitempty"`
+	UpdatedAt          time.Time `json:"updated_at,omitempty"`
+}
+
+// ScriptRunResult is returned by script execution endpoints.
+type ScriptRunResult struct {
+	SourceID        string              `json:"source_id"`
+	ExitCode        int                 `json:"exit_code"`
+	DurationMs      int64               `json:"duration_ms"`
+	TimedOut        bool                `json:"timed_out,omitempty"`
+	Stdout          string              `json:"stdout"`
+	StdoutTruncated bool                `json:"stdout_truncated,omitempty"`
+	Stderr          string              `json:"stderr"`
+	StderrTruncated bool                `json:"stderr_truncated,omitempty"`
+	Error           string              `json:"error,omitempty"`
+	Nodes           []config.NodeConfig `json:"nodes,omitempty"`
+	Applied         bool                `json:"applied"`
+	ReplacedCount   int                 `json:"replaced_count,omitempty"`
+	ImportedCount   int                 `json:"imported_count,omitempty"`
+}
+
 // NodeRuntimeState stores runtime health and activity state per node tag.
 type NodeRuntimeState struct {
 	Tag              string
@@ -69,6 +104,9 @@ type Store interface {
 
 	LoadSubscriptions(ctx context.Context) ([]string, error)
 	SaveSubscriptions(ctx context.Context, subscriptions []string) error
+
+	LoadScriptSources(ctx context.Context) ([]ScriptSource, error)
+	SaveScriptSources(ctx context.Context, sources []ScriptSource) error
 
 	LoadRuntimeConfig(ctx context.Context) (RuntimeConfig, bool, error)
 	SaveRuntimeConfig(ctx context.Context, runtime RuntimeConfig) error

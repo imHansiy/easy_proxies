@@ -121,6 +121,38 @@ export interface ConfigNode {
   source_ref?: string
 }
 
+export interface ScriptSource {
+  id: string
+  name: string
+  command: string
+  args?: string[]
+  script: string
+  timeout_ms?: number
+  setup_timeout_ms?: number
+  max_output_bytes?: number
+  max_nodes?: number
+  python_requirements?: string[]
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface ScriptRunResult {
+  source_id: string
+  exit_code: number
+  duration_ms: number
+  timed_out?: boolean
+  stdout: string
+  stdout_truncated?: boolean
+  stderr: string
+  stderr_truncated?: boolean
+  error?: string
+  nodes?: ConfigNode[]
+  applied: boolean
+  replaced_count?: number
+  imported_count?: number
+}
+
 export interface RuntimeConfig {
   mode: string
   listener: {

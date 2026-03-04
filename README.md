@@ -73,19 +73,7 @@ SUBSCRIPTION_REFRESH_ENABLED=true
 
 ### 2. Run
 
-**Docker (Recommended):**
-
-```bash
-./start.sh
-```
-
-Or manually:
-
-```bash
-docker compose up -d
-```
-
-**Local Build:**
+**Local Build (Recommended):**
 
 ```bash
 # Recommended: use helper script (includes full tags with QUIC by default)
@@ -122,7 +110,7 @@ Notes:
 ```yaml
 mode: pool                    # Mode: pool, multi-port, or hybrid
 log_level: info               # Log level: debug, info, warn, error
-external_ip: ""               # External IP for export (recommended for Docker)
+external_ip: ""               # External IP for export (optional)
 
 # Subscription URLs (optional, multiple supported)
 subscriptions:
@@ -654,7 +642,7 @@ subscription_refresh:
 
 ### Render + PostgreSQL (Recommended)
 
-This repo includes a Render Blueprint at `render.yaml`.
+Render Blueprint (`render.yaml`) has been removed.
 
 With DB storage enabled, nodes, subscriptions, runtime settings, and runtime state are persisted in the database.
 
@@ -684,7 +672,7 @@ Render-related env vars supported by the app:
 Use `network_mode: host` for direct host network access:
 
 ```yaml
-# docker-compose.yml
+Docker Compose example has been removed.
 services:
   easy-proxies:
     image: ghcr.io/jasonwong1991/easy_proxies:latest
@@ -704,7 +692,7 @@ services:
 Manually specify port mappings:
 
 ```yaml
-# docker-compose.yml
+Docker Compose example has been removed.
 services:
   easy-proxies:
     image: ghcr.io/jasonwong1991/easy_proxies:latest

@@ -55,7 +55,8 @@ func WithStore(store storage.Store) Option {
 
 // Manager owns the lifecycle of the active sing-box instance.
 type Manager struct {
-	mu sync.RWMutex
+	mu       sync.RWMutex
+	scriptMu sync.Mutex
 
 	currentBox    *box.Box
 	monitorMgr    *monitor.Manager
@@ -205,7 +206,7 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 		m.applyConfigSettings(newCfg)
 		m.mu.Lock()
 		m.currentBox = nil
-		m.cfg = newCfg
+		m.applyConfigLocked(newCfg)
 		m.mu.Unlock()
 		if err := m.persistNodesForConfig(ctx, newCfg); err != nil {
 			m.logger.Warnf("persist nodes after monitor-only reload failed: %v", err)
@@ -267,7 +268,7 @@ func (m *Manager) Reload(newCfg *config.Config) error {
 
 	m.mu.Lock()
 	m.currentBox = instance
-	m.cfg = newCfg
+	m.applyConfigLocked(newCfg)
 	if m.monitorMgr != nil && !m.healthCheckStarted {
 		m.monitorMgr.StartPeriodicHealthCheck(periodicHealthInterval, periodicHealthTimeout)
 		m.healthCheckStarted = true
@@ -300,9 +301,23 @@ func (m *Manager) rollbackToOldConfig(ctx context.Context, oldCfg *config.Config
 	}
 	m.mu.Lock()
 	m.currentBox = instance
-	m.cfg = oldCfg
+	// Keep config pointer stable; if needed, copy values back.
+	m.applyConfigLocked(oldCfg)
 	m.mu.Unlock()
 	m.logger.Infof("rollback successful")
+}
+
+// applyConfigLocked copies the new config into the active config pointer.
+// This keeps long-lived config references (monitor/subscription) consistent.
+func (m *Manager) applyConfigLocked(next *config.Config) {
+	if next == nil {
+		return
+	}
+	if m.cfg == nil {
+		m.cfg = next
+		return
+	}
+	*m.cfg = *next
 }
 
 // Close terminates the active instance and auxiliary components.
